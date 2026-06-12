@@ -545,15 +545,24 @@ function drawTowers(){
     L.circleMarker([t.lat,t.lon],{renderer:rend,radius:t.tech==='5G'?7:5,color:'#0b1220',weight:1.5,
       fillColor:CARCOL[t.car]||'#999',fillOpacity:.95})
       .bindTooltip(`🗼 ${t.car.toUpperCase()} ${t.tech} · site ${t.gid}<br>${t.n.toLocaleString()} samples · best ${t.best} dBm`)
-      .on('click',()=>showFootprint(t))
+      .on('click',()=>{suppressMapClick=true;showFootprint(t);setTimeout(()=>suppressMapClick=false,50);})
       .addTo(towerLayer);
   }
   towerLayer.addTo(map);
   document.getElementById('towerCount').textContent=`${n.toLocaleString()} sites shown`;
 }
 document.querySelectorAll('.carF,.techF').forEach(c=>c.addEventListener('change',()=>{if(towersIdx)drawTowers();}));
-async function showFootprint(t){
+let selectedTower=null, suppressMapClick=false;
+const TOWERINFO_DEFAULT='Tower positions are estimated from real drive-test measurements: the RSRP-weighted centre of the strongest readings per cell site. Click a tower to see its measured footprint; click it again (or the map background) to deselect. <b>The file is read locally in your browser — it is never uploaded anywhere.</b>';
+function clearFootprint(){
   if(footLayer){map.removeLayer(footLayer);footLayer=null;}
+  selectedTower=null;
+  document.getElementById('towerInfo').innerHTML=TOWERINFO_DEFAULT;
+}
+async function showFootprint(t){
+  if(selectedTower===t.id){clearFootprint();return;}   // re-click = deselect
+  if(footLayer){map.removeLayer(footLayer);footLayer=null;}
+  selectedTower=t.id;
   if(!towerChunks[t.ck]){
     try{ towerChunks[t.ck]=await (await fetch(`data/towers/c_${t.ck}.json`)).json(); }catch(e){return;}
   }
@@ -562,21 +571,27 @@ async function showFootprint(t){
   const rend=L.canvas({padding:.3});
   for(const p of pts){
     const col=p[2]>=-85?'#22c55e':p[2]>=-95?'#a3e635':p[2]>=-105?'#facc15':p[2]>=-112?'#f97316':'#ef4444';
-    L.circleMarker([p[0],p[1]],{renderer:rend,radius:4,stroke:false,fillColor:col,fillOpacity:.8})
-      .bindTooltip(`${p[2]} dBm`).addTo(footLayer);
+    L.polyline([[t.lat,t.lon],[p[0],p[1]]],{renderer:rend,color:col,weight:1,opacity:.22,interactive:false}).addTo(footLayer);
   }
-  L.circleMarker([t.lat,t.lon],{radius:11,color:'#fff',weight:3,fillColor:CARCOL[t.car],fillOpacity:1}).addTo(footLayer);
+  for(const p of pts){
+    const col=p[2]>=-85?'#22c55e':p[2]>=-95?'#a3e635':p[2]>=-105?'#facc15':p[2]>=-112?'#f97316':'#ef4444';
+    L.circleMarker([p[0],p[1]],{renderer:rend,radius:4,stroke:false,fillColor:col,fillOpacity:.85,interactive:false}).addTo(footLayer);
+  }
+  L.circleMarker([t.lat,t.lon],{radius:11,color:'#fff',weight:3,fillColor:CARCOL[t.car],fillOpacity:1,interactive:false}).addTo(footLayer);
   footLayer.addTo(map);
   document.getElementById('towerInfo').innerHTML=
     `<b style="color:${CARCOL[t.car]}">⬤</b> <b>${t.car.toUpperCase()} ${t.tech}</b> — site ${t.gid}<br>
      Estimated position: ${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}<br>
      ${t.n.toLocaleString()} measurements · best RSRP <b>${t.best} dBm</b><br>
      Observed serving radius (≥−110 dBm, 90th pct): <b>${t.rad?t.rad.toLocaleString()+' m':'—'}</b><br>
-     ${pts.length} footprint points shown — click another tower to switch, or re-click to refresh.`;
+     ${pts.length} footprint points · re-click tower or map background to deselect.`;
   const las=pts.map(p=>p[0]).concat([t.lat]), los=pts.map(p=>p[1]).concat([t.lon]);
   map.fitBounds([[Math.min(...las),Math.min(...los)],[Math.max(...las),Math.max(...los)]],{padding:[30,30]});
 }
-map.on('click',e=>{if(mode==='assess')dropPin(e.latlng.lat,e.latlng.lng);});
+map.on('click',e=>{
+  if(mode==='assess'){dropPin(e.latlng.lat,e.latlng.lng);return;}
+  if(!suppressMapClick) clearFootprint();
+});
 document.getElementById('band').addEventListener('change',()=>{if(current)dropPin(current.lat,current.lon);});
 ['rad','up','cs','mh','eirp'].forEach(id=>{
   document.getElementById(id).addEventListener('change',async ()=>{
