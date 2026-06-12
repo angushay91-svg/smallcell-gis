@@ -21,6 +21,8 @@ The `data/` folder holds a pre-processed national dataset: all 188,880 Census 20
 | Economic activity | ONS UK small area GVA estimates 1998–2023 (LSOA level) |
 | Deprivation | MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019 |
 | Businesses | ONS UK Business Counts (local units, MSOA) via Nomis API |
+| Addressable premises | ONS National Statistics UPRN Lookup (Dec 2025) — 37.5m UPRNs counted per Output Area |
+| Transport | DfT NaPTAN — 355k active bus stops, rail/tram access points and ferry terminals (exact locations) |
 
 ## Key assumptions & caveats
 

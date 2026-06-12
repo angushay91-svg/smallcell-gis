@@ -89,12 +89,15 @@
       <tbody></tbody>
     </table>
     <div class="btnrow"><button onclick="exportCSV()">⬇ Export CSV</button><button onclick="clearPins()">Clear all</button></div>
+    <div class="btnrow"><button id="bestBtn" onclick="findBest()">✨ Find best sites in view</button></div>
+    <div class="hint">Zoom to a town, press the button, and the 5 highest-value candidate locations in view get starred (quick scan: whole-block counting, sliders applied). Click a star for the full assessment.</div>
   </div>
 
   <div class="card">
     <details>
       <summary>Method, data sources &amp; caveats</summary>
-      <p><b>Data (all open, OGL-licensed):</b> ONS Census 2021 (population TS001, households TS041 per Output Area); ONS Output Area population-weighted centroids &amp; lookups (Open Geography Portal); ONS UK small area GVA estimates 1998–2023 (LSOA, current prices); MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019; ONS UK Business Counts via Nomis (local units per MSOA).</p>
+      <p><b>Data (all open, OGL-licensed):</b> ONS Census 2021 (population TS001, households TS041 per Output Area); ONS Output Area population-weighted centroids &amp; lookups (Open Geography Portal); ONS UK small area GVA estimates 1998–2023 (LSOA, current prices); MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019; ONS UK Business Counts via Nomis (local units per MSOA); ONS National Statistics UPRN Lookup Dec 2025 (37.5m addressable premises, counted per Output Area); DfT NaPTAN (355k active bus/rail/tram/ferry stops, exact locations).</p>
+      <p><b>Footfall proxy:</b> there is no free national footfall dataset, so transit activity (bus stops + 3× rail/tram access points in the circle) is shown as a relative footfall indicator.</p>
       <p><b>How the circle is measured:</b> each Output Area (~125 households) is approximated as a disc around its population-weighted centroid, sized from the distance to its neighbours. The share of that disc inside your coverage circle weights how much of the OA's population, premises, businesses and GVA count as covered. LSOA GVA is allocated to OAs by population and business weight, and business counts are allocated from MSOA by household share — so treat block-level figures as estimates, not facts.</p>
       <p><b>Value model:</b> annual value = (uplift% × covered GVA) + (consumer value × covered residents). The 0.7% default uplift reflects the broad literature on mobile coverage/productivity effects; the honest range is wide (≈0.3–1.5%), hence the slider. 10-year value is discounted at the HM Treasury Green Book rate (3.5%). Assumes genuinely no usable coverage today — where coverage exists, these are upper bounds.</p>
       <p><b>Not included (no free open source exists):</b> real footfall and card-spend data are commercial; business counts and workday GVA are used as proxies.</p>
@@ -161,17 +164,23 @@ async function assess(lat,lon){
     for(const c2 of cands){ if(c2!==c){ const dd=dist(c.o[2],c.o[1],c2.o[2],c2.o[1]); if(dd<nn) nn=dd; } }
     c.r = Math.min(2000, Math.max(60, 0.62*(nn===1e9?300:nn)));
   }
-  let pop=0,hh=0,gva=0,biz=0,imdW=0,imdN=0; const lads={}, covered=[];
+  let pop=0,hh=0,gva=0,biz=0,uprn=0,imdW=0,imdN=0; const lads={}, covered=[];
   for(const c of cands){
     const f=overlapFrac(Math.max(c.d,0.01),R,c.r);
     if(f<=0) continue;
-    pop+=f*c.o[3]; hh+=f*c.o[4]; gva+=f*c.o[5]; biz+=f*c.o[8];
+    pop+=f*c.o[3]; hh+=f*c.o[4]; gva+=f*c.o[5]; biz+=f*c.o[8]; uprn+=f*(c.o[9]||0);
     if(c.o[6]>0){imdW+=f*c.o[3]*c.o[6]; imdN+=f*c.o[3];}
     lads[c.lad]=(lads[c.lad]||0)+f*c.o[3];
     covered.push(c);
   }
+  // transport stops inside the circle (exact points, NaPTAN)
+  const stops={bus:0,rail:0,tram:0,ferry:0}, stopPts=[];
+  for(const t of tiles) for(const s of (t.stops||[])){
+    const d=dist(lat,lon,s[1],s[0]);
+    if(d<=R){ stops[['bus','rail','tram','ferry'][s[2]]]++; stopPts.push(s); }
+  }
   const lad=Object.entries(lads).sort((a,b)=>b[1]-a[1]).map(e=>e[0]).slice(0,2).join(' / ')||'—';
-  return {lat,lon,R,pop,hh,gva,biz,imd:imdN>0?imdW/imdN:0,lad,covered};
+  return {lat,lon,R,pop,hh,gva,biz,uprn,stops,stopPts,imd:imdN>0?imdW/imdN:0,lad,covered};
 }
 function money(x){ // x in £
   if(x>=1e9) return '£'+(x/1e9).toFixed(2)+'bn';
@@ -193,9 +202,12 @@ function render(res){
   el.innerHTML=`<h2>Site assessment — ${res.lad}</h2>
   <div class="grid">
     <div class="stat"><div class="v">${Math.round(res.pop).toLocaleString()}</div><div class="l">residents covered</div></div>
-    <div class="stat"><div class="v">${Math.round(res.hh).toLocaleString()}</div><div class="l">household premises</div></div>
+    <div class="stat"><div class="v">${Math.round(res.uprn).toLocaleString()}</div><div class="l">addressable premises (UPRNs)</div></div>
+    <div class="stat"><div class="v">${Math.round(res.hh).toLocaleString()}</div><div class="l">households (Census 2021)</div></div>
     <div class="stat"><div class="v">${Math.round(res.biz).toLocaleString()}</div><div class="l">business units</div></div>
-    <div class="stat"><div class="v"><span class="imdtag" style="background:${imdColor(res.imd)};color:#111">${dec}</span></div><div class="l">deprivation decile (1 = most deprived)</div></div>
+    <div class="stat"><div class="v">${res.stops.bus.toLocaleString()} 🚌</div><div class="l">bus stops in circle</div></div>
+    <div class="stat"><div class="v">${res.stops.rail+res.stops.tram} 🚉</div><div class="l">rail/tram access points${res.stops.ferry?` · ${res.stops.ferry} ⛴`:''}</div></div>
+    <div class="stat big" style="grid-column:1/-1"><div class="v" style="font-size:16px;color:var(--text)"><span class="imdtag" style="background:${imdColor(res.imd)};color:#111">${dec}</span> deprivation decile <span style="color:var(--muted);font-weight:400">(1 = most deprived)</span></div></div>
     <div class="stat big"><div class="v">${money(gvaY)}</div><div class="l">est. annual GVA inside ${res.R}m circle (2023, current prices)</div></div>
     <div class="stat big"><div class="v">${money(ann)} / yr</div><div class="l">est. value of new small cell coverage<br>(${money(prod)} productivity + ${money(cons)} consumer value)</div></div>
     <div class="stat big"><div class="v" style="color:var(--warn)">${money(npv)}</div><div class="l">10-year value (Green Book 3.5% discount)</div></div>
@@ -204,7 +216,7 @@ function render(res){
     <button onclick="savePin()">📌 Save site</button>
     <button onclick="toggleOAs()" id="oaBtn">◉ Show data blocks</button>
   </div>
-  <div class="hint">GVA per head here: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas intersect the circle. Assumes no usable coverage exists today.</div>`;
+  <div class="hint">GVA per head here: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas intersect the circle · transit activity (footfall proxy): <b>${res.stops.bus+3*(res.stops.rail+res.stops.tram)}</b>. Assumes no usable coverage exists today.</div>`;
 }
 async function dropPin(lat,lon){
   const R=+document.getElementById('rad').value;
@@ -236,8 +248,12 @@ function toggleOAs(){
   for(const c of current.covered){
     const f=overlapFrac(c.d,current.R,c.r);
     L.circleMarker([c.o[2],c.o[1]],{radius:5,color:'#111',weight:1,fillColor:imdColor(c.o[6]),fillOpacity:.95})
-      .bindTooltip(`<b>${c.o[0]}</b><br>Pop ${c.o[3]} · HH ${c.o[4]} · Biz ${c.o[8]}<br>GVA £${(c.o[5]/1000).toFixed(1)}m · IMD ${c.o[6]||'—'}<br>Counted at ${(f*100).toFixed(0)}%`)
+      .bindTooltip(`<b>${c.o[0]}</b><br>Pop ${c.o[3]} · HH ${c.o[4]} · UPRNs ${c.o[9]||0} · Biz ${c.o[8]}<br>GVA £${(c.o[5]/1000).toFixed(1)}m · IMD ${c.o[6]||'—'}<br>Counted at ${(f*100).toFixed(0)}%`)
       .addTo(oaLayer);
+  }
+  for(const s of current.stopPts){
+    L.circleMarker([s[1],s[0]],{radius:3,color:'#0b1220',weight:1,fillColor:['#fbbf24','#f87171','#c084fc','#22d3ee'][s[2]],fillOpacity:1})
+      .bindTooltip(['Bus stop','Rail access','Tram/metro access','Ferry'][s[2]]).addTo(oaLayer);
   }
   oaLayer.addTo(map);
   document.getElementById('oaBtn').textContent='◎ Hide data blocks';
@@ -248,26 +264,80 @@ function savePin(){
   const ann=up*current.gva*1000+cs*current.pop;
   pins.push({name:current.lad+' #'+(pins.length+1),lat:current.lat,lon:current.lon,R:current.R,
     pop:Math.round(current.pop),hh:Math.round(current.hh),biz:Math.round(current.biz),
+    uprn:Math.round(current.uprn),bus:current.stops.bus,rail:current.stops.rail+current.stops.tram,
     gva_m:+(current.gva/1000).toFixed(2),imd:+current.imd.toFixed(1),value_k:Math.round(ann/1000)});
   localStorage.setItem('sc_pins',JSON.stringify(pins));
   drawPins();
 }
+let siteLayer=L.layerGroup().addTo(map);
 function drawPins(){
   document.getElementById('pinCount').textContent=pins.length;
   const tb=document.querySelector('#pinTable tbody'); tb.innerHTML='';
   document.getElementById('pinTable').style.display=pins.length?'table':'none';
   document.getElementById('pinsEmpty').style.display=pins.length?'none':'block';
-  pins.forEach((p,i)=>{
+  siteLayer.clearLayers();
+  const sorted=[...pins].map((p,i)=>({p,i})).sort((a,b)=>b.p.value_k-a.p.value_k);
+  sorted.forEach(({p,i},rank)=>{
     const tr=document.createElement('tr'); tr.className='pinrow';
-    tr.innerHTML=`<td>${p.name}</td><td class="num">${p.pop.toLocaleString()}</td><td class="num">${p.gva_m}</td><td class="num">${p.value_k.toLocaleString()}</td><td style="cursor:pointer" onclick="event.stopPropagation();pins.splice(${i},1);localStorage.setItem('sc_pins',JSON.stringify(pins));drawPins()">✕</td>`;
+    tr.innerHTML=`<td>#${rank+1} ${p.name}</td><td class="num">${p.pop.toLocaleString()}</td><td class="num">${p.gva_m}</td><td class="num">${p.value_k.toLocaleString()}</td><td style="cursor:pointer" onclick="event.stopPropagation();pins.splice(${i},1);localStorage.setItem('sc_pins',JSON.stringify(pins));drawPins()">✕</td>`;
     tr.onclick=()=>{map.setView([p.lat,p.lon],15);dropPin(p.lat,p.lon);};
     tb.appendChild(tr);
+    L.circle([p.lat,p.lon],{radius:p.R,color:'#34d399',weight:1.5,fillOpacity:.08}).addTo(siteLayer);
+    L.marker([p.lat,p.lon],{icon:L.divIcon({className:'',html:`<div style="background:#34d399;color:#06281c;font-weight:800;font-size:11px;border-radius:99px;width:22px;height:22px;display:flex;align-items:center;justify-content:center;border:2px solid #06281c">${rank+1}</div>`,iconSize:[22,22],iconAnchor:[11,11]})})
+      .bindTooltip(`${p.name} — ${p.value_k.toLocaleString()} £k/yr`).addTo(siteLayer);
   });
+  if(pins.length){
+    const tot=pins.reduce((s,p)=>s+p.value_k,0);
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><b>Network total</b></td><td class="num">${pins.reduce((s,p)=>s+p.pop,0).toLocaleString()}</td><td class="num">${pins.reduce((s,p)=>s+p.gva_m,0).toFixed(1)}</td><td class="num"><b>${tot.toLocaleString()}</b></td><td></td>`;
+    tb.appendChild(tr);
+  }
+}
+let bestLayer=null;
+async function findBest(){
+  if(map.getZoom()<13){alert('Zoom in closer (a town/city district) first — then I scan the visible area.');return;}
+  const btn=document.getElementById('bestBtn'); btn.textContent='Scanning…';
+  const b=map.getBounds(), R=+document.getElementById('rad').value;
+  const up=+document.getElementById('up').value/100, cs=+document.getElementById('cs').value;
+  const ids=new Set();
+  for(let lon=b.getWest();lon<=b.getEast()+TILE_DEG;lon+=TILE_DEG) for(let lat=b.getSouth();lat<=b.getNorth()+TILE_DEG;lat+=TILE_DEG) ids.add(tileId(lon,lat));
+  const tiles=(await Promise.all([...ids].map(getTile))).filter(t=>t);
+  const oas=[];
+  for(const t of tiles) for(const o of t.oas)
+    if(o[1]>b.getWest()-0.01&&o[1]<b.getEast()+0.01&&o[2]>b.getSouth()-0.01&&o[2]<b.getNorth()+0.01) oas.push(o);
+  // bucket OAs for speed
+  const cell=Math.max(R,250)/111320, buck={};
+  for(const o of oas){const k=Math.floor(o[1]/cell)+'_'+Math.floor(o[2]/cell);(buck[k]=buck[k]||[]).push(o);}
+  const N=40, dLat=(b.getNorth()-b.getSouth())/N, dLon=(b.getEast()-b.getWest())/N, scores=[];
+  for(let gy=0;gy<=N;gy++) for(let gx=0;gx<=N;gx++){
+    const lat=b.getSouth()+gy*dLat, lon=b.getWest()+gx*dLon;
+    let pop=0,gva=0;
+    const cx=Math.floor(lon/cell), cy=Math.floor(lat/cell);
+    for(let i=-1;i<=1;i++) for(let j=-1;j<=1;j++)
+      for(const o of (buck[(cx+i)+'_'+(cy+j)]||[]))
+        if(dist(lat,lon,o[2],o[1])<=R){pop+=o[3];gva+=o[5];}
+    if(pop+gva>0) scores.push({lat,lon,v:up*gva*1000+cs*pop});
+  }
+  scores.sort((a,b2)=>b2.v-a.v);
+  const top=[];
+  for(const s of scores){
+    if(top.length>=5) break;
+    if(top.every(t=>dist(s.lat,s.lon,t.lat,t.lon)>=2*R)) top.push(s);
+  }
+  if(bestLayer) map.removeLayer(bestLayer);
+  bestLayer=L.layerGroup().addTo(map);
+  top.forEach((s,i)=>{
+    L.marker([s.lat,s.lon],{icon:L.divIcon({className:'',html:`<div style="background:#fbbf24;color:#3b2a00;font-weight:800;font-size:11px;border-radius:99px;width:24px;height:24px;display:flex;align-items:center;justify-content:center;border:2px solid #3b2a00">★${i+1}</div>`,iconSize:[24,24],iconAnchor:[12,12]})})
+      .bindTooltip(`Candidate ★${i+1} — ~${money(s.v)}/yr · click for full assessment`)
+      .on('click',()=>dropPin(s.lat,s.lon)).addTo(bestLayer);
+  });
+  btn.textContent='✨ Find best sites in view';
+  if(!top.length) alert('No populated areas found in view.');
 }
 function clearPins(){pins=[];localStorage.setItem('sc_pins','[]');drawPins();}
 function exportCSV(){
-  const head='name,lat,lon,radius_m,residents,households,businesses,gva_2023_gbp_m,imd_decile,est_value_gbp_k_per_yr';
-  const rows=pins.map(p=>[p.name.replaceAll(',',';'),p.lat.toFixed(6),p.lon.toFixed(6),p.R,p.pop,p.hh,p.biz,p.gva_m,p.imd,p.value_k].join(','));
+  const head='name,lat,lon,radius_m,residents,uprn_premises,households,businesses,bus_stops,rail_tram_access,gva_2023_gbp_m,imd_decile,est_value_gbp_k_per_yr';
+  const rows=pins.map(p=>[p.name.replaceAll(',',';'),p.lat.toFixed(6),p.lon.toFixed(6),p.R,p.pop,p.uprn||'',p.hh,p.biz,p.bus??'',p.rail??'',p.gva_m,p.imd,p.value_k].join(','));
   const blob=new Blob([head+'\n'+rows.join('\n')],{type:'text/csv'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='small_cell_sites.csv'; a.click();
 }
