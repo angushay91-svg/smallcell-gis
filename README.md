@@ -23,6 +23,13 @@ The `data/` folder holds a pre-processed national dataset: all 188,880 Census 20
 | Businesses | ONS UK Business Counts (local units, MSOA) via Nomis API |
 | Addressable premises | ONS National Statistics UPRN Lookup (Dec 2025) — 37.5m UPRNs counted per Output Area |
 | Transport | DfT NaPTAN — 355k active bus stops, rail/tram access points and ferry terminals (exact locations) |
+| Elevation (England) | Environment Agency LiDAR Composite DSM 1m (includes buildings/trees), fetched live via WCS at click time |
+| Elevation (Wales/gaps) | AWS Terrain Tiles (~30m, ground only) fallback |
+| Mast context | OpenStreetMap communication masts via Overpass API (ODbL) |
+
+## Terrain line-of-sight mode
+
+With LiDAR mode on, the app fetches a 1m elevation grid around your pin, places the antenna at a chosen height above the surface, casts rays out to the max radius and paints the true line-of-sight footprint — shadows behind buildings, trees and hills excluded. All economics are weighted by the footprint, not the circle. This is a viewshed (standard first-cut for small-cell siting), not full RF ray tracing: no reflections/diffraction modelled.
 
 ## Key assumptions & caveats
 

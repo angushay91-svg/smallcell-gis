@@ -62,9 +62,16 @@
 
   <div class="card">
     <h2>Coverage assumptions</h2>
+    <div class="slider-row" style="margin-top:2px">
+      <label style="cursor:pointer"><span>📡 Terrain line-of-sight (LiDAR)</span><input type="checkbox" id="los" checked style="accent-color:var(--accent)"></label>
+    </div>
     <div class="slider-row">
-      <label>Cell radius <b><span id="radV">200</span> m</b></label>
-      <input type="range" id="rad" min="50" max="1000" step="25" value="200">
+      <label>Max cell radius <b><span id="radV">250</span> m</b></label>
+      <input type="range" id="rad" min="50" max="1000" step="25" value="250">
+    </div>
+    <div class="slider-row" id="mhRow">
+      <label>Antenna height above ground/roof <b><span id="mhV">8</span> m</b></label>
+      <input type="range" id="mh" min="2" max="30" step="1" value="8">
     </div>
     <div class="slider-row">
       <label>Productivity uplift from new coverage <b><span id="upV">0.7</span>% of area GVA</b></label>
@@ -89,7 +96,7 @@
       <tbody></tbody>
     </table>
     <div class="btnrow"><button onclick="exportCSV()">⬇ Export CSV</button><button onclick="clearPins()">Clear all</button></div>
-    <div class="btnrow"><button id="bestBtn" onclick="findBest()">✨ Find best sites in view</button></div>
+    <div class="btnrow"><button id="bestBtn" onclick="findBest()">✨ Find best sites in view</button><button id="mastBtn" onclick="toggleMasts()">🗼 Known masts (OSM)</button></div>
     <div class="hint">Zoom to a town, press the button, and the 5 highest-value candidate locations in view get starred (quick scan: whole-block counting, sliders applied). Click a star for the full assessment.</div>
   </div>
 
@@ -98,7 +105,9 @@
       <summary>Method, data sources &amp; caveats</summary>
       <p><b>Data (all open, OGL-licensed):</b> ONS Census 2021 (population TS001, households TS041 per Output Area); ONS Output Area population-weighted centroids &amp; lookups (Open Geography Portal); ONS UK small area GVA estimates 1998–2023 (LSOA, current prices); MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019; ONS UK Business Counts via Nomis (local units per MSOA); ONS National Statistics UPRN Lookup Dec 2025 (37.5m addressable premises, counted per Output Area); DfT NaPTAN (355k active bus/rail/tram/ferry stops, exact locations).</p>
       <p><b>Footfall proxy:</b> there is no free national footfall dataset, so transit activity (bus stops + 3× rail/tram access points in the circle) is shown as a relative footfall indicator.</p>
-      <p><b>How the circle is measured:</b> each Output Area (~125 households) is approximated as a disc around its population-weighted centroid, sized from the distance to its neighbours. The share of that disc inside your coverage circle weights how much of the OA's population, premises, businesses and GVA count as covered. LSOA GVA is allocated to OAs by population and business weight, and business counts are allocated from MSOA by household share — so treat block-level figures as estimates, not facts.</p>
+      <p><b>How the footprint is measured:</b> with terrain mode on, the app fetches the Environment Agency 1m LiDAR Digital Surface Model (which includes buildings and trees) around your pin via the EA's live WCS API, places the antenna at your chosen height above the surface, and casts 720 rays out to the max radius. Anywhere without line of sight over the rooftops is shadowed; receivers assumed at 1.5m. Where 1m LiDAR is unavailable (Wales, ~1% of England) it falls back to ~30m open terrain tiles (ground only) and says so. This is a viewshed — the standard first-cut for small-cell siting — not full RF ray tracing: reflections, diffraction and foliage penetration are not modelled, so treat shadows as pessimistic for sub-6GHz and realistic for mmWave.</p>
+      <p><b>How coverage is counted:</b> each Output Area (~125 households) is approximated as a disc around its population-weighted centroid, sized from the distance to its neighbours. The share of that disc inside the footprint (sampled at 9 points against the line-of-sight mask) weights how much of the OA's population, premises, businesses and GVA count as covered. LSOA GVA is allocated to OAs by population and business weight, and business counts are allocated from MSOA by household share — treat block-level figures as estimates. The ✨ best-site scan uses the simple circle (no terrain) for speed.</p>
+      <p><b>Mast locations:</b> the 🗼 overlay shows communication masts crowd-mapped in OpenStreetMap (ODbL) — useful context, but incomplete. Commercial databases (e.g. mastdata.com) are licensed products and not used here.</p>
       <p><b>Value model:</b> annual value = (uplift% × covered GVA) + (consumer value × covered residents). The 0.7% default uplift reflects the broad literature on mobile coverage/productivity effects; the honest range is wide (≈0.3–1.5%), hence the slider. 10-year value is discounted at the HM Treasury Green Book rate (3.5%). Assumes genuinely no usable coverage today — where coverage exists, these are upper bounds.</p>
       <p><b>Not included (no free open source exists):</b> real footfall and card-spend data are commercial; business counts and workday GVA are used as proxies.</p>
     </details>
@@ -107,6 +116,8 @@
 <div id="map"></div>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.11.0/proj4.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/geotiff@2.1.3/dist-browser/geotiff.js"></script>
 <script>
 const TILE_DEG = 1;
 const tileCache = {};
@@ -144,7 +155,128 @@ function overlapFrac(d,r1,r2){
   const a3=0.5*Math.sqrt((-d+r1+r2)*(d+r1-r2)*(d-r1+r2)*(d+r1+r2));
   return (a1+a2-a3)/(Math.PI*r2*r2);
 }
-async function assess(lat,lon){
+// ===================== TERRAIN / VIEWSHED ENGINE =====================
+proj4.defs('EPSG:27700','+proj=tmerc +lat_0=49 +lon_0=-2 +k=0.9996012717 +x_0=400000 +y_0=-100000 +ellps=airy +towgs84=446.448,-125.157,542.06,0.15,0.247,0.842,-20.489 +units=m +no_defs');
+const toOSGB=(lon,lat)=>proj4('EPSG:4326','EPSG:27700',[lon,lat]);
+const toWGS=(e,n)=>proj4('EPSG:27700','EPSG:4326',[e,n]);
+const EA_WCS='https://environment.data.gov.uk/spatialdata/lidar-composite-digital-surface-model-last-return-dsm-1m/wcs?service=WCS&version=2.0.1&request=GetCoverage&coverageId=9ba4d5ac-d596-445a-9056-dae3ddec0178__Lidar_Composite_Elevation_LZ_DSM_1m&format=image/tiff';
+let dsmCache=null; // {e0,n0,res,w,h,grid,source,lat,lon,pad}
+let losLayer=null;
+
+async function fetchDSM(lat,lon,Rmax){
+  if(dsmCache && dsmCache.lat===lat && dsmCache.lon===lon && dsmCache.pad>=Rmax+20) return dsmCache;
+  const [e,n]=toOSGB(lon,lat);
+  const pad=Rmax+20, e0=Math.floor(e-pad), n0=Math.floor(n-pad), e1=Math.ceil(e+pad), n1=Math.ceil(n+pad);
+  // Try EA 1m LiDAR DSM (England)
+  try{
+    const r=await fetch(`${EA_WCS}&subset=E(${e0},${e1})&subset=N(${n0},${n1})`);
+    if(r.ok){
+      const buf=await r.arrayBuffer();
+      const tiff=await GeoTIFF.fromArrayBuffer(buf);
+      const img=await tiff.getImage();
+      const data=(await img.readRasters())[0];
+      const w=img.getWidth(), h=img.getHeight();
+      let valid=0,zeros=0;
+      const grid=new Float32Array(w*h);
+      for(let i=0;i<w*h;i++){const v=data[i]; if(v<-1e30||v===undefined||isNaN(v)){grid[i]=NaN;}else{grid[i]=v;valid++;if(v===0)zeros++;}}
+      // EA serves zero-fill outside England (e.g. Wales) — reject as fake
+      if(valid>w*h*0.4 && zeros<valid*0.9){
+        dsmCache={e0,n0:n1-h,res:(e1-e0)/w,w,h,grid,source:'lidar',lat,lon,pad,nTop:n1};
+        return dsmCache;
+      }
+    }
+  }catch(err){}
+  // Fallback: AWS open terrain tiles (~30m, ground only) — covers Wales & gaps
+  try{
+    const z=14, res=5;
+    const w2=Math.ceil((e1-e0)/res), h2=Math.ceil((n1-n0)/res);
+    const grid=new Float32Array(w2*h2).fill(NaN);
+    const tileFor=(lat2,lon2)=>{const x=(lon2+180)/360*2**z, y=(1-Math.log(Math.tan(lat2*Math.PI/180)+1/Math.cos(lat2*Math.PI/180))/Math.PI)/2*2**z; return [x,y];};
+    const needed={};
+    const corners=[[e0,n0],[e1,n0],[e0,n1],[e1,n1]];
+    for(const [ce,cn] of corners){const [lo,la]=toWGS(ce,cn); const [tx,ty]=tileFor(la,lo); needed[`${Math.floor(tx)}_${Math.floor(ty)}`]=1;}
+    const tiles={};
+    await Promise.all(Object.keys(needed).map(async k=>{
+      const [tx,ty]=k.split('_').map(Number);
+      const img=new Image(); img.crossOrigin='anonymous';
+      await new Promise((res2,rej)=>{img.onload=res2;img.onerror=rej;img.src=`https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${z}/${tx}/${ty}.png`;});
+      const cv=document.createElement('canvas');cv.width=cv.height=256;
+      const cx=cv.getContext('2d');cx.drawImage(img,0,0);
+      tiles[k]=cx.getImageData(0,0,256,256).data;
+    }));
+    for(let row=0;row<h2;row++) for(let col=0;col<w2;col++){
+      const ce=e0+col*res, cn=n1-row*res;
+      const [lo,la]=toWGS(ce,cn); const [tx,ty]=tileFor(la,lo);
+      const k=`${Math.floor(tx)}_${Math.floor(ty)}`;
+      if(!tiles[k]) continue;
+      const px=Math.min(255,Math.floor((tx%1)*256)), py=Math.min(255,Math.floor((ty%1)*256));
+      const i4=(py*256+px)*4, d=tiles[k];
+      grid[row*w2+col]=(d[i4]*256+d[i4+1]+d[i4+2]/256)-32768;
+    }
+    dsmCache={e0,n0,res,w:w2,h:h2,grid,source:'terrain',lat,lon,pad,nTop:n1};
+    return dsmCache;
+  }catch(err){return null;}
+}
+function dsmAt(d,e,n){ // sample grid (row 0 = top = nTop)
+  const col=Math.round((e-d.e0)/d.res), row=Math.round((d.nTop-n)/d.res);
+  if(col<0||row<0||col>=d.w||row>=d.h) return NaN;
+  return d.grid[row*d.w+col];
+}
+function viewshed(d,lat,lon,hMast,Rmax){
+  const [eC,nC]=toOSGB(lon,lat);
+  let base=dsmAt(d,eC,nC);
+  if(isNaN(base)){ // search nearby for valid base
+    for(let r=1;r<10&&isNaN(base);r++) for(const [dx,dy] of [[r,0],[-r,0],[0,r],[0,-r]]){const v=dsmAt(d,eC+dx*d.res,nC+dy*d.res); if(!isNaN(v)){base=v;break;}}
+    if(isNaN(base)) return null;
+  }
+  const txH=base+hMast, hRx=1.5, step=Math.max(d.res,1);
+  const size=Math.ceil(2*Rmax/step)+1, half=Math.floor(size/2);
+  const mask=new Uint8Array(size*size); // 1=covered
+  const nRays=Math.max(720,Math.ceil(2*Math.PI*Rmax/step));
+  for(let ri=0;ri<nRays;ri++){
+    const az=ri/nRays*2*Math.PI, sx=Math.sin(az), sy=Math.cos(az);
+    let maxAng=-Infinity;
+    for(let dist=step;dist<=Rmax;dist+=step){
+      const e=eC+sx*dist, n=nC+sy*dist;
+      let z=dsmAt(d,e,n); if(isNaN(z)) z=base;
+      const angRx=(z+hRx-txH)/dist;
+      if(angRx>=maxAng){
+        const mc=half+Math.round(sx*dist/step), mr=half-Math.round(sy*dist/step);
+        if(mc>=0&&mr>=0&&mc<size&&mr<size) mask[mr*size+mc]=1;
+      }
+      const angObs=(z-txH)/dist;
+      if(angObs>maxAng) maxAng=angObs;
+    }
+  }
+  // dilate to close radial gaps
+  const m2=new Uint8Array(mask);
+  for(let r=1;r<size-1;r++) for(let c=1;c<size-1;c++){
+    if(!mask[r*size+c]&&(mask[r*size+c-1]+mask[r*size+c+1]+mask[(r-1)*size+c]+mask[(r+1)*size+c])>=2) m2[r*size+c]=1;
+  }
+  m2[half*size+half]=1;
+  let cov=0,tot=0;
+  for(let r=0;r<size;r++) for(let c=0;c<size;c++){
+    const dd=Math.hypot(c-half,r-half)*step;
+    if(dd<=Rmax){tot++; if(m2[r*size+c])cov++;}
+  }
+  return {mask:m2,size,half,step,eC,nC,frac:cov/tot,source:d.source,
+    covered:(e,n)=>{const c=half+Math.round((e-eC)/step), r=half-Math.round((n-nC)/step); return (c>=0&&r>=0&&c<size&&r<size)?m2[r*size+c]:0;}};
+}
+function drawViewshed(vs){
+  if(losLayer){map.removeLayer(losLayer);losLayer=null;}
+  if(!vs) return;
+  const cv=document.createElement('canvas'); cv.width=cv.height=vs.size;
+  const cx=cv.getContext('2d'); const id=cx.createImageData(vs.size,vs.size);
+  for(let i=0;i<vs.size*vs.size;i++){
+    if(vs.mask[i]){id.data[i*4]=56;id.data[i*4+1]=189;id.data[i*4+2]=248;id.data[i*4+3]=110;}
+  }
+  cx.putImageData(id,0,0);
+  const ext=vs.half*vs.step;
+  const [w1,s1]=toWGS(vs.eC-ext,vs.nC-ext), [e2,n2]=toWGS(vs.eC+ext,vs.nC+ext);
+  losLayer=L.imageOverlay(cv.toDataURL(),[[s1,w1],[n2,e2]],{opacity:.85,interactive:false}).addTo(map);
+}
+// ===================== END VIEWSHED ENGINE =====================
+async function assess(lat,lon,vs){
   const R=+document.getElementById('rad').value;
   const pad=(R+2500)/111320; // deg padding for neighbour search
   const ids=new Set();
@@ -164,23 +296,38 @@ async function assess(lat,lon){
     for(const c2 of cands){ if(c2!==c){ const dd=dist(c.o[2],c.o[1],c2.o[2],c2.o[1]); if(dd<nn) nn=dd; } }
     c.r = Math.min(2000, Math.max(60, 0.62*(nn===1e9?300:nn)));
   }
+  // footprint weighting: fraction of an OA's disc that the viewshed actually reaches
+  function maskFrac(c){
+    if(!vs) return 1;
+    const [e,n]=toOSGB(c.o[1],c.o[2]);
+    const rr=Math.min(c.r,150);
+    let s=0,nn=0;
+    for(const [dx,dy] of [[0,0],[rr,0],[-rr,0],[0,rr],[0,-rr],[rr*.7,rr*.7],[-rr*.7,rr*.7],[rr*.7,-rr*.7],[-rr*.7,-rr*.7]]){s+=vs.covered(e+dx,n+dy);nn++;}
+    return s/nn;
+  }
   let pop=0,hh=0,gva=0,biz=0,uprn=0,imdW=0,imdN=0; const lads={}, covered=[];
   for(const c of cands){
-    const f=overlapFrac(Math.max(c.d,0.01),R,c.r);
+    let f=overlapFrac(Math.max(c.d,0.01),R,c.r);
+    if(f<=0) continue;
+    const mf=maskFrac(c);
+    f*=mf; c.mf=mf;
     if(f<=0) continue;
     pop+=f*c.o[3]; hh+=f*c.o[4]; gva+=f*c.o[5]; biz+=f*c.o[8]; uprn+=f*(c.o[9]||0);
     if(c.o[6]>0){imdW+=f*c.o[3]*c.o[6]; imdN+=f*c.o[3];}
     lads[c.lad]=(lads[c.lad]||0)+f*c.o[3];
     covered.push(c);
   }
-  // transport stops inside the circle (exact points, NaPTAN)
+  // transport stops inside the footprint (exact points, NaPTAN)
   const stops={bus:0,rail:0,tram:0,ferry:0}, stopPts=[];
   for(const t of tiles) for(const s of (t.stops||[])){
     const d=dist(lat,lon,s[1],s[0]);
-    if(d<=R){ stops[['bus','rail','tram','ferry'][s[2]]]++; stopPts.push(s); }
+    if(d<=R){
+      if(vs){const [e,n]=toOSGB(s[0],s[1]); if(!vs.covered(e,n)) continue;}
+      stops[['bus','rail','tram','ferry'][s[2]]]++; stopPts.push(s);
+    }
   }
   const lad=Object.entries(lads).sort((a,b)=>b[1]-a[1]).map(e=>e[0]).slice(0,2).join(' / ')||'—';
-  return {lat,lon,R,pop,hh,gva,biz,uprn,stops,stopPts,imd:imdN>0?imdW/imdN:0,lad,covered};
+  return {lat,lon,R,pop,hh,gva,biz,uprn,stops,stopPts,imd:imdN>0?imdW/imdN:0,lad,covered,vs};
 }
 function money(x){ // x in £
   if(x>=1e9) return '£'+(x/1e9).toFixed(2)+'bn';
@@ -216,30 +363,50 @@ function render(res){
     <button onclick="savePin()">📌 Save site</button>
     <button onclick="toggleOAs()" id="oaBtn">◉ Show data blocks</button>
   </div>
-  <div class="hint">GVA per head here: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas intersect the circle · transit activity (footfall proxy): <b>${res.stops.bus+3*(res.stops.rail+res.stops.tram)}</b>. Assumes no usable coverage exists today.</div>`;
+  <div class="hint">${res.vs?`📡 <b>Line-of-sight footprint reaches ${(res.vs.frac*100).toFixed(0)}%</b> of the ${res.R}m max circle (${res.vs.source==='lidar'?'EA 1m LiDAR incl. buildings':'⚠ 30m terrain only — no LiDAR here (Wales/gaps)'}) · `:''}GVA per head: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas reached · transit activity (footfall proxy): <b>${res.stops.bus+3*(res.stops.rail+res.stops.tram)}</b>. Assumes no usable coverage exists today.</div>`;
 }
 async function dropPin(lat,lon){
   const R=+document.getElementById('rad').value;
+  const useLOS=document.getElementById('los').checked;
+  const hMast=+document.getElementById('mh').value;
   if(marker) map.removeLayer(marker);
   if(circle) map.removeLayer(circle);
   if(oaLayer){map.removeLayer(oaLayer);oaLayer=null;}
+  if(losLayer){map.removeLayer(losLayer);losLayer=null;}
   marker=L.marker([lat,lon]).addTo(map);
-  circle=L.circle([lat,lon],{radius:R,color:'#38bdf8',weight:2,fillOpacity:.12}).addTo(map);
-  document.getElementById('results').innerHTML='<h2>Site assessment</h2><div class="spin">Measuring coverage area…</div>';
-  const res=await assess(lat,lon);
+  circle=L.circle([lat,lon],{radius:R,color:'#38bdf8',weight:2,dashArray:useLOS?'6 6':null,fillOpacity:useLOS?0:.12}).addTo(map);
+  const el=document.getElementById('results');
+  let vs=null;
+  if(useLOS){
+    el.innerHTML='<h2>Site assessment</h2><div class="spin">⛰ Fetching 1m LiDAR elevation around the pin…</div>';
+    const d=await fetchDSM(lat,lon,R);
+    if(d){
+      el.innerHTML='<h2>Site assessment</h2><div class="spin">📡 Casting rays over the rooftops…</div>';
+      await new Promise(r=>setTimeout(r,20));
+      vs=viewshed(d,lat,lon,hMast,R);
+      drawViewshed(vs);
+    }
+  }
+  el.innerHTML='<h2>Site assessment</h2><div class="spin">Measuring who the footprint reaches…</div>';
+  const res=await assess(lat,lon,vs);
   render(res);
 }
 map.on('click',e=>dropPin(e.latlng.lat,e.latlng.lng));
-['rad','up','cs'].forEach(id=>{
-  document.getElementById(id).addEventListener('input',async ()=>{
+['rad','up','cs','mh'].forEach(id=>{
+  document.getElementById(id).addEventListener('change',async ()=>{
+    if(current && (id==='rad'||id==='mh')) dropPin(current.lat,current.lon);
+  });
+  document.getElementById(id).addEventListener('input',()=>{
     document.getElementById('radV').textContent=document.getElementById('rad').value;
     document.getElementById('upV').textContent=document.getElementById('up').value;
     document.getElementById('csV').textContent=document.getElementById('cs').value;
-    if(current){
-      if(id==='rad'){ dropPin(current.lat,current.lon); }
-      else render(current);
-    }
+    document.getElementById('mhV').textContent=document.getElementById('mh').value;
+    if(current && id!=='rad' && id!=='mh') render(current);
   });
+});
+document.getElementById('los').addEventListener('change',()=>{
+  document.getElementById('mhRow').style.opacity=document.getElementById('los').checked?1:.35;
+  if(current) dropPin(current.lat,current.lon);
 });
 function toggleOAs(){
   if(oaLayer){map.removeLayer(oaLayer);oaLayer=null;document.getElementById('oaBtn').textContent='◉ Show data blocks';return;}
@@ -340,6 +507,27 @@ function exportCSV(){
   const rows=pins.map(p=>[p.name.replaceAll(',',';'),p.lat.toFixed(6),p.lon.toFixed(6),p.R,p.pop,p.uprn||'',p.hh,p.biz,p.bus??'',p.rail??'',p.gva_m,p.imd,p.value_k].join(','));
   const blob=new Blob([head+'\n'+rows.join('\n')],{type:'text/csv'});
   const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='small_cell_sites.csv'; a.click();
+}
+let mastLayer=null;
+async function toggleMasts(){
+  const btn=document.getElementById('mastBtn');
+  if(mastLayer){map.removeLayer(mastLayer);mastLayer=null;btn.textContent='🗼 Known masts (OSM)';return;}
+  if(map.getZoom()<10){alert('Zoom in to a region first.');return;}
+  btn.textContent='Searching…';
+  const b=map.getBounds(), bb=`${b.getSouth()},${b.getWest()},${b.getNorth()},${b.getEast()}`;
+  const q=`[out:json][timeout:25];(node["man_made"="mast"]["tower:type"="communication"](${bb});node["man_made"="mast"]["communication:mobile_phone"="yes"](${bb});node["man_made"="communications_tower"](${bb});node["man_made"="tower"]["tower:type"="communication"](${bb}););out body 1000;`;
+  try{
+    const r=await fetch('https://overpass-api.de/api/interpreter',{method:'POST',body:'data='+encodeURIComponent(q)});
+    const d=await r.json();
+    mastLayer=L.layerGroup();
+    for(const el2 of d.elements){
+      const op=el2.tags['operator']||el2.tags['owner']||'unknown operator';
+      L.circleMarker([el2.lat,el2.lon],{radius:6,color:'#0b1220',weight:1.5,fillColor:'#c084fc',fillOpacity:.95})
+        .bindTooltip(`🗼 ${el2.tags['man_made']} — ${op}${el2.tags['height']?` · ${el2.tags['height']}m`:''}`).addTo(mastLayer);
+    }
+    mastLayer.addTo(map);
+    btn.textContent=`🗼 ${d.elements.length} masts shown (hide)`;
+  }catch(e){btn.textContent='🗼 Known masts (OSM)';alert('OpenStreetMap query failed — try again or zoom in further.');}
 }
 async function doSearch(){
   const q=document.getElementById('q').value.trim(); if(!q) return;
