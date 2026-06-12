@@ -271,13 +271,21 @@ function viewshed(d,lat,lon,hMast,Rmax){
   return {mask:m2,size,half,step,eC,nC,frac:cov/tot,source:d.source,
     covered:(e,n)=>{const c=half+Math.round((e-eC)/step), r=half-Math.round((n-nC)/step); return (c>=0&&r>=0&&c<size&&r<size)?m2[r*size+c]:0;}};
 }
+let currentBase='🌑 Dark';
+map.on('baselayerchange',e=>{currentBase=e.name; if(current&&current.vs) drawViewshed(current.vs);});
+function losColor(){
+  if(currentBase.includes('Satellite')) return [250,204,21,150];  // bright yellow on imagery
+  if(currentBase.includes('Streets'))   return [217,70,239,130];  // magenta on light map
+  return [56,189,248,110];                                        // cyan on dark
+}
 function drawViewshed(vs){
   if(losLayer){map.removeLayer(losLayer);losLayer=null;}
   if(!vs) return;
+  const [cr,cg,cb,ca]=losColor();
   const cv=document.createElement('canvas'); cv.width=cv.height=vs.size;
   const cx=cv.getContext('2d'); const id=cx.createImageData(vs.size,vs.size);
   for(let i=0;i<vs.size*vs.size;i++){
-    if(vs.mask[i]){id.data[i*4]=56;id.data[i*4+1]=189;id.data[i*4+2]=248;id.data[i*4+3]=110;}
+    if(vs.mask[i]){id.data[i*4]=cr;id.data[i*4+1]=cg;id.data[i*4+2]=cb;id.data[i*4+3]=ca;}
   }
   cx.putImageData(id,0,0);
   const ext=vs.half*vs.step;
