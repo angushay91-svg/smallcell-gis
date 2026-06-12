@@ -74,6 +74,26 @@
       <input type="range" id="mh" min="2" max="30" step="1" value="8">
     </div>
     <div class="slider-row">
+      <label>Frequency band
+        <select id="band" style="background:var(--panel);color:var(--text);border:1px solid #334155;border-radius:6px;padding:2px 6px;font-size:12px">
+          <option value="1800">1800 MHz (B3)</option>
+          <option value="2600">2600 MHz (B7)</option>
+          <option value="3400" selected>3.4 GHz (n78)</option>
+        </select>
+      </label>
+    </div>
+    <div class="slider-row">
+      <label>Small cell EIRP <b><span id="eirpV">35</span> dBm</b></label>
+      <input type="range" id="eirp" min="24" max="46" step="1" value="35">
+    </div>
+    <div class="hint" id="legend" style="display:none">RSRP:
+      <span style="color:#22c55e">■ ≥−85</span>
+      <span style="color:#a3e635">■ −95</span>
+      <span style="color:#facc15">■ −105</span>
+      <span style="color:#f97316">■ −110 dBm</span>
+      <span style="color:#64748b">· below −110 = not served</span>
+    </div>
+    <div class="slider-row">
       <label>Productivity uplift from new coverage <b><span id="upV">0.7</span>% of area GVA</b></label>
       <input type="range" id="up" min="0" max="3" step="0.1" value="0.7">
     </div>
@@ -105,7 +125,8 @@
       <summary>Method, data sources &amp; caveats</summary>
       <p><b>Data (all open, OGL-licensed):</b> ONS Census 2021 (population TS001, households TS041 per Output Area); ONS Output Area population-weighted centroids &amp; lookups (Open Geography Portal); ONS UK small area GVA estimates 1998–2023 (LSOA, current prices); MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019; ONS UK Business Counts via Nomis (local units per MSOA); ONS National Statistics UPRN Lookup Dec 2025 (37.5m addressable premises, counted per Output Area); DfT NaPTAN (355k active bus/rail/tram/ferry stops, exact locations).</p>
       <p><b>Footfall proxy:</b> there is no free national footfall dataset, so transit activity (bus stops + 3× rail/tram access points in the circle) is shown as a relative footfall indicator.</p>
-      <p><b>How the footprint is measured:</b> with terrain mode on, the app fetches the Environment Agency 1m LiDAR Digital Surface Model (which includes buildings and trees) around your pin via the EA's live WCS API, places the antenna at your chosen height above the surface, and casts 720 rays out to the max radius. Anywhere without line of sight over the rooftops is shadowed; receivers assumed at 1.5m. Where 1m LiDAR is unavailable (Wales, ~1% of England) it falls back to ~30m open terrain tiles (ground only) and says so. This is a viewshed — the standard first-cut for small-cell siting — not full RF ray tracing: reflections, diffraction and foliage penetration are not modelled, so treat shadows as pessimistic for sub-6GHz and realistic for mmWave.</p>
+      <p><b>How the footprint is measured:</b> with terrain mode on, the app fetches the Environment Agency 1m LiDAR Digital Surface Model (which includes buildings and trees) around your pin via the EA's live WCS API, places the antenna at your chosen height above the surface, and casts rays out to the max radius to classify every pixel as line-of-sight or shadowed (receivers at 1.5m above the surface). Where 1m LiDAR is unavailable (Wales, ~1% of England) it falls back to ~30m open terrain tiles (ground only) and says so.</p>
+      <p><b>RSRP model:</b> signal strength per pixel uses the 3GPP TR 38.901 Urban Micro (UMi) path-loss model — LOS curve for visible pixels, NLOS curve for shadowed ones (so shadowed streets are weaker, not dead). Okumura-Hata/COST-231 were not used because they are only valid to 1500/2000 MHz and macro-cell ranges. RSRP = EIRP − per-resource-element offset (20 MHz / 100 RB assumed for all bands) − path loss; pixels below −110 dBm are treated as not served and excluded from the economics. Fading, indoor loss, foliage penetration, interference and antenna patterns are not modelled — treat as a clear-sky planning estimate, optimistic outdoors.</p>
       <p><b>How coverage is counted:</b> each Output Area (~125 households) is approximated as a disc around its population-weighted centroid, sized from the distance to its neighbours. The share of that disc inside the footprint (sampled at 9 points against the line-of-sight mask) weights how much of the OA's population, premises, businesses and GVA count as covered. LSOA GVA is allocated to OAs by population and business weight, and business counts are allocated from MSOA by household share — treat block-level figures as estimates. The ✨ best-site scan uses the simple circle (no terrain) for speed.</p>
       <p><b>Mast locations:</b> the 🗼 overlay shows communication masts crowd-mapped in OpenStreetMap (ODbL) — useful context, but incomplete. Commercial databases (e.g. mastdata.com) are licensed products and not used here.</p>
       <p><b>Value model:</b> annual value = (uplift% × covered GVA) + (consumer value × covered residents). The 0.7% default uplift reflects the broad literature on mobile coverage/productivity effects; the honest range is wide (≈0.3–1.5%), hence the slider. 10-year value is discounted at the HM Treasury Green Book rate (3.5%). Assumes genuinely no usable coverage today — where coverage exists, these are upper bounds.</p>
@@ -263,29 +284,50 @@ function viewshed(d,lat,lon,hMast,Rmax){
     if(!mask[r*size+c]&&(mask[r*size+c-1]+mask[r*size+c+1]+mask[(r-1)*size+c]+mask[(r+1)*size+c])>=2) m2[r*size+c]=1;
   }
   m2[half*size+half]=1;
+  // ---- RSRP per pixel: 3GPP TR 38.901 UMi path loss, LOS curve where rays see, NLOS where shadowed ----
+  const fGHz=(+document.getElementById('band').value)/1000;
+  const eirp=+document.getElementById('eirp').value;
+  const RE_OFF=10*Math.log10(12*100);            // per-resource-element offset, 20 MHz / 100 RB
+  const hBS=Math.max(hMast,4), hUT=1.5;
+  const dBP=4*(hBS-1)*(hUT-1)*fGHz*1e9/3e8;
+  const TH=-110;                                  // serving threshold, dBm
+  function plLOS(d3,d2){
+    if(d2<=dBP) return 32.4+21*Math.log10(Math.max(d3,1))+20*Math.log10(fGHz);
+    return 32.4+40*Math.log10(d3)+20*Math.log10(fGHz)-9.5*Math.log10(dBP*dBP+(hBS-hUT)**2);
+  }
+  const rsrp=new Float32Array(size*size).fill(-999);
   let cov=0,tot=0;
   for(let r=0;r<size;r++) for(let c=0;c<size;c++){
-    const dd=Math.hypot(c-half,r-half)*step;
-    if(dd<=Rmax){tot++; if(m2[r*size+c])cov++;}
+    const d2=Math.hypot(c-half,r-half)*step;
+    if(d2>Rmax) continue;
+    tot++;
+    const e=eC+(c-half)*step, n=nC-(r-half)*step;
+    let z=dsmAt(d,e,n); if(isNaN(z)) z=base;
+    const d3=Math.sqrt(d2*d2+(txH-(z+hUT))**2);
+    const los=plLOS(d3,d2);
+    const pl=m2[r*size+c]?los:Math.max(los,22.4+35.3*Math.log10(Math.max(d3,1))+21.3*Math.log10(fGHz));
+    const v=eirp-RE_OFF-pl;
+    rsrp[r*size+c]=v;
+    if(v>=TH)cov++;
   }
-  return {mask:m2,size,half,step,eC,nC,frac:cov/tot,source:d.source,
-    covered:(e,n)=>{const c=half+Math.round((e-eC)/step), r=half-Math.round((n-nC)/step); return (c>=0&&r>=0&&c<size&&r<size)?m2[r*size+c]:0;}};
+  return {mask:m2,rsrp,size,half,step,eC,nC,frac:cov/tot,source:d.source,band:fGHz*1000,eirp,th:TH,
+    covered:(e,n)=>{const c=half+Math.round((e-eC)/step), r=half-Math.round((n-nC)/step); return (c>=0&&r>=0&&c<size&&r<size)?(rsrp[r*size+c]>=TH?1:0):0;}};
 }
-let currentBase='🌑 Dark';
-map.on('baselayerchange',e=>{currentBase=e.name; if(current&&current.vs) drawViewshed(current.vs);});
-function losColor(){
-  if(currentBase.includes('Satellite')) return [250,204,21,150];  // bright yellow on imagery
-  if(currentBase.includes('Streets'))   return [217,70,239,130];  // magenta on light map
-  return [56,189,248,110];                                        // cyan on dark
+function rsrpColor(v){ // returns [r,g,b,a] or null below threshold
+  if(v>=-85)  return [34,197,94,150];   // excellent — green
+  if(v>=-95)  return [163,230,53,150];  // good — lime
+  if(v>=-105) return [250,204,21,150];  // fair — yellow
+  if(v>=-110) return [249,115,22,150];  // edge — orange
+  return null;
 }
 function drawViewshed(vs){
   if(losLayer){map.removeLayer(losLayer);losLayer=null;}
   if(!vs) return;
-  const [cr,cg,cb,ca]=losColor();
   const cv=document.createElement('canvas'); cv.width=cv.height=vs.size;
   const cx=cv.getContext('2d'); const id=cx.createImageData(vs.size,vs.size);
   for(let i=0;i<vs.size*vs.size;i++){
-    if(vs.mask[i]){id.data[i*4]=cr;id.data[i*4+1]=cg;id.data[i*4+2]=cb;id.data[i*4+3]=ca;}
+    const col=rsrpColor(vs.rsrp[i]);
+    if(col){id.data[i*4]=col[0];id.data[i*4+1]=col[1];id.data[i*4+2]=col[2];id.data[i*4+3]=col[3];}
   }
   cx.putImageData(id,0,0);
   const ext=vs.half*vs.step;
@@ -355,6 +397,7 @@ function money(x){ // x in £
 function imdColor(d){return ['#999','#d73027','#f46d43','#fdae61','#fee08b','#ffffbf','#d9ef8b','#a6d96a','#66bd63','#1a9850','#006837'][Math.round(d)]||'#999';}
 function render(res){
   current=res;
+  document.getElementById('legend').style.display=(res&&res.vs)?'block':'none';
   const el=document.getElementById('results');
   if(!res){el.innerHTML='<h2>Site assessment</h2><div class="placeholder">No data here — that point looks like open water or is outside England &amp; Wales.</div>';return;}
   const up=+document.getElementById('up').value/100;
@@ -380,7 +423,7 @@ function render(res){
     <button onclick="savePin()">📌 Save site</button>
     <button onclick="toggleOAs()" id="oaBtn">◉ Show data blocks</button>
   </div>
-  <div class="hint">${res.vs?`📡 <b>Line-of-sight footprint reaches ${(res.vs.frac*100).toFixed(0)}%</b> of the ${res.R}m max circle (${res.vs.source==='lidar'?'EA 1m LiDAR incl. buildings':'⚠ 30m terrain only — no LiDAR here (Wales/gaps)'}) · `:''}GVA per head: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas reached · transit activity (footfall proxy): <b>${res.stops.bus+3*(res.stops.rail+res.stops.tram)}</b>. Assumes no usable coverage exists today.</div>`;
+  <div class="hint">${res.vs?`📡 <b>RSRP ≥ ${res.vs.th} dBm reaches ${(res.vs.frac*100).toFixed(0)}%</b> of the ${res.R}m max circle at ${res.vs.band>=3000?(res.vs.band/1000)+' GHz':res.vs.band+' MHz'}, ${res.vs.eirp} dBm EIRP (${res.vs.source==='lidar'?'EA 1m LiDAR, 3GPP UMi LOS/NLOS':'⚠ 30m terrain only — no LiDAR here (Wales/gaps)'}) · `:''}GVA per head: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas reached · transit activity (footfall proxy): <b>${res.stops.bus+3*(res.stops.rail+res.stops.tram)}</b>. Assumes no usable coverage exists today.</div>`;
 }
 async function dropPin(lat,lon){
   const R=+document.getElementById('rad').value;
@@ -409,16 +452,18 @@ async function dropPin(lat,lon){
   render(res);
 }
 map.on('click',e=>dropPin(e.latlng.lat,e.latlng.lng));
-['rad','up','cs','mh'].forEach(id=>{
+document.getElementById('band').addEventListener('change',()=>{if(current)dropPin(current.lat,current.lon);});
+['rad','up','cs','mh','eirp'].forEach(id=>{
   document.getElementById(id).addEventListener('change',async ()=>{
-    if(current && (id==='rad'||id==='mh')) dropPin(current.lat,current.lon);
+    if(current && (id==='rad'||id==='mh'||id==='eirp')) dropPin(current.lat,current.lon);
   });
   document.getElementById(id).addEventListener('input',()=>{
     document.getElementById('radV').textContent=document.getElementById('rad').value;
     document.getElementById('upV').textContent=document.getElementById('up').value;
     document.getElementById('csV').textContent=document.getElementById('cs').value;
     document.getElementById('mhV').textContent=document.getElementById('mh').value;
-    if(current && id!=='rad' && id!=='mh') render(current);
+    document.getElementById('eirpV').textContent=document.getElementById('eirp').value;
+    if(current && id!=='rad' && id!=='mh' && id!=='eirp') render(current);
   });
 });
 document.getElementById('los').addEventListener('change',()=>{
