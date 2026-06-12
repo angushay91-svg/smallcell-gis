@@ -558,7 +558,17 @@ const TOWERINFO_DEFAULT='Tower positions are estimated from real drive-test meas
 function clearFootprint(){
   if(footLayer){map.removeLayer(footLayer);footLayer=null;}
   selectedTower=null;
+  if(mode==='towers'&&towerLayer&&!map.hasLayer(towerLayer)) towerLayer.addTo(map); // bring the other towers back
   document.getElementById('towerInfo').innerHTML=TOWERINFO_DEFAULT;
+}
+function convexHull(pts){ // monotone chain on [lat,lon] points
+  const p=pts.map(q=>[q[1],q[0]]).sort((a,b)=>a[0]-b[0]||a[1]-b[1]); // x=lon,y=lat
+  if(p.length<3) return null;
+  const cross=(o,a,b)=>(a[0]-o[0])*(b[1]-o[1])-(a[1]-o[1])*(b[0]-o[0]);
+  const lo=[],hi=[];
+  for(const q of p){while(lo.length>=2&&cross(lo[lo.length-2],lo[lo.length-1],q)<=0)lo.pop();lo.push(q);}
+  for(const q of p.reverse()){while(hi.length>=2&&cross(hi[hi.length-2],hi[hi.length-1],q)<=0)hi.pop();hi.push(q);}
+  return lo.slice(0,-1).concat(hi.slice(0,-1)).map(q=>[q[1],q[0]]); // back to [lat,lon]
 }
 async function showFootprint(t){
   if(selectedTower===t.id && footLayer){clearFootprint();return;}   // re-click = deselect
@@ -578,14 +588,17 @@ async function showFootprint(t){
     const col=p[2]>=-85?'#22c55e':p[2]>=-95?'#a3e635':p[2]>=-105?'#facc15':p[2]>=-112?'#f97316':'#ef4444';
     L.circleMarker([p[0],p[1]],{renderer:rend,radius:4,stroke:false,fillColor:col,fillOpacity:.85,interactive:false}).addTo(footLayer);
   }
+  const hull=convexHull(pts.concat([[t.lat,t.lon,0]]));
+  if(hull) L.polygon(hull,{color:CARCOL[t.car],weight:2.5,dashArray:'8 5',fillColor:CARCOL[t.car],fillOpacity:.06,interactive:false}).addTo(footLayer);
   L.circleMarker([t.lat,t.lon],{radius:11,color:'#fff',weight:3,fillColor:CARCOL[t.car],fillOpacity:1,interactive:false}).addTo(footLayer);
+  map.removeLayer(towerLayer); // hide the other towers while one is selected
   footLayer.addTo(map);
   document.getElementById('towerInfo').innerHTML=
     `<b style="color:${CARCOL[t.car]}">⬤</b> <b>${t.car.toUpperCase()} ${t.tech}</b> — site ${t.gid}<br>
      Estimated position: ${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}<br>
      ${t.n.toLocaleString()} measurements · best RSRP <b>${t.best} dBm</b><br>
      Observed serving radius (≥−110 dBm, 90th pct): <b>${t.rad?t.rad.toLocaleString()+' m':'—'}</b><br>
-     ${pts.length} footprint points · re-click tower or map background to deselect.`;
+     ${pts.length} footprint points · dashed outline = observed footprint extent · <b>click anywhere on the map to go back to all towers</b>.`;
   const las=pts.map(p=>p[0]).concat([t.lat]), los=pts.map(p=>p[1]).concat([t.lon]);
   map.fitBounds([[Math.min(...las),Math.min(...los)],[Math.max(...las),Math.max(...los)]],{padding:[30,30]});
 }
