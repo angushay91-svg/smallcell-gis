@@ -523,8 +523,8 @@ function loadTowerFile(file){
       if(d.chunks) Object.assign(towerChunks,d.chunks);
       drawTowers();
       if(towersIdx.towers.length){
-        const t=towersIdx.towers[0];
-        map.setView([50.75,-2.35],10);
+        const las=towersIdx.towers.map(t=>t.lat), los=towersIdx.towers.map(t=>t.lon);
+        map.fitBounds([[Math.min(...las),Math.min(...los)],[Math.max(...las),Math.max(...los)]],{padding:[20,20]});
       }
     }catch(e){alert('Could not read that file — is it the dorset_towers.json?');}
   };
