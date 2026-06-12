@@ -127,8 +127,17 @@ let current = null;
 let pins = JSON.parse(localStorage.getItem('sc_pins')||'[]');
 
 const map = L.map('map',{zoomControl:true}).setView([52.6,-1.8],7);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
-  attribution:'&copy; OpenStreetMap contributors &copy; CARTO',maxZoom:19}).addTo(map);
+const baseDark=L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  attribution:'&copy; OpenStreetMap contributors &copy; CARTO',maxZoom:19});
+const baseSat=L.layerGroup([
+  L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',{
+    attribution:'Imagery &copy; Esri, Maxar, Earthstar Geographics',maxZoom:19}),
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png',{maxZoom:19,pane:'shadowPane'})
+]);
+const baseStreets=L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png',{
+  attribution:'&copy; OpenStreetMap contributors',maxZoom:19});
+baseDark.addTo(map);
+L.control.layers({'🌑 Dark':baseDark,'🛰 Satellite':baseSat,'🗺 Streets':baseStreets},null,{position:'topright'}).addTo(map);
 
 fetch('data/index.json').then(r=>r.json()).then(d=>{index=d;});
 
