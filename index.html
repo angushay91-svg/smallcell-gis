@@ -48,6 +48,10 @@
   details summary{cursor:pointer;font-size:12px;color:var(--muted)}
   details p{font-size:11.5px;color:var(--muted);line-height:1.55}
   .leaflet-container{background:#0b1220}
+  .tabs{display:flex;gap:6px;margin-bottom:12px}
+  .tab{flex:1;padding:7px;text-align:center;border-radius:8px;background:var(--panel2);cursor:pointer;font-size:12.5px;border:1px solid #334155;user-select:none}
+  .tab.active{background:var(--accent);color:#06283d;font-weight:700;border-color:var(--accent)}
+  .chk{display:inline-flex;align-items:center;gap:4px;margin-right:10px;font-size:12px;color:var(--muted);cursor:pointer}
 </style>
 </head>
 <body>
@@ -58,6 +62,32 @@
   <div class="searchrow">
     <input id="q" placeholder="Search postcode or place… e.g. LS1 1UR" onkeydown="if(event.key==='Enter')doSearch()">
     <button onclick="doSearch()">Go</button>
+  </div>
+
+  <div class="tabs">
+    <div class="tab active" id="tabAssess" onclick="setMode('assess')">📍 Site assessment</div>
+    <div class="tab" id="tabTowers" onclick="setMode('towers')">🗼 Tower locator</div>
+  </div>
+
+  <div class="card" id="towerCard" style="display:none">
+    <h2>Estimated cell sites — measured data</h2>
+    <div style="margin-bottom:6px">
+      <label class="chk"><input type="checkbox" class="carF" value="ee" checked>EE</label>
+      <label class="chk"><input type="checkbox" class="carF" value="o2" checked>O2</label>
+      <label class="chk"><input type="checkbox" class="carF" value="three" checked>Three</label>
+      <label class="chk"><input type="checkbox" class="carF" value="vodafone" checked>Vodafone</label>
+    </div>
+    <div style="margin-bottom:8px">
+      <label class="chk"><input type="checkbox" class="techF" value="4G" checked>4G</label>
+      <label class="chk"><input type="checkbox" class="techF" value="5G" checked>5G</label>
+      <span id="towerCount" style="font-size:12px;color:var(--muted)"></span>
+    </div>
+    <div style="margin-bottom:8px">
+      <input type="file" id="towerFile" accept=".json" style="display:none" onchange="loadTowerFile(this.files[0])">
+      <button onclick="document.getElementById('towerFile').click()" style="width:100%;background:var(--panel);border:1px solid #334155;color:var(--text);border-radius:8px;padding:8px;font-size:12.5px;cursor:pointer">📂 Load tower data file (stays on your computer)</button>
+    </div>
+    <div id="towerInfo" class="placeholder" style="padding:2px">Load your <b>dorset_towers.json</b> file (in your West Yorkshire Tender folder). Tower positions are estimated from real drive-test measurements: the RSRP-weighted centre of the strongest readings per cell site. Click a tower to see its measured footprint. <b>The file is read locally in your browser — it is never uploaded anywhere.</b></div>
+    <div class="hint">Estimates are biased towards roads where measurements were taken — treat as approximate (typically within a few hundred metres). RSRP colours: <span style="color:#22c55e">■ strong</span> <span style="color:#facc15">■ mid</span> <span style="color:#ef4444">■ weak</span></div>
   </div>
 
   <div class="card">
@@ -451,7 +481,102 @@ async function dropPin(lat,lon){
   const res=await assess(lat,lon,vs);
   render(res);
 }
-map.on('click',e=>dropPin(e.latlng.lat,e.latlng.lng));
+// ===================== TOWER LOCATOR MODE =====================
+let mode='assess', towersIdx=null, towerLayer=null, footLayer=null;
+const towerChunks={};
+const CARCOL={ee:'#16b8b0',o2:'#3b6cff',three:'#a855f7',vodafone:'#e60000'};
+function setMode(m){
+  mode=m;
+  document.getElementById('tabAssess').classList.toggle('active',m==='assess');
+  document.getElementById('tabTowers').classList.toggle('active',m==='towers');
+  document.getElementById('towerCard').style.display=m==='towers'?'block':'none';
+  for(const id of ['results']) document.getElementById(id).parentNode===null||(document.getElementById(id).style.display=m==='assess'?'block':'none');
+  if(m==='towers'){
+    if(losLayer){map.removeLayer(losLayer);losLayer=null;}
+    if(circle){map.removeLayer(circle);circle=null;}
+    if(marker){map.removeLayer(marker);marker=null;}
+    if(oaLayer){map.removeLayer(oaLayer);oaLayer=null;}
+    loadTowers();
+  }else{
+    if(towerLayer){map.removeLayer(towerLayer);towerLayer=null;}
+    if(footLayer){map.removeLayer(footLayer);footLayer=null;}
+  }
+}
+async function loadTowers(){
+  if(!towersIdx){
+    // optional: works if data/towers/index.json is hosted (e.g. private self-hosted copy)
+    try{
+      const r=await fetch('data/towers/index.json');
+      if(r.ok){towersIdx=await r.json();}
+    }catch(e){}
+    if(!towersIdx){document.getElementById('towerCount').textContent='no data loaded yet';return;}
+  }
+  drawTowers();
+}
+function loadTowerFile(file){
+  if(!file) return;
+  const rd=new FileReader();
+  rd.onload=()=>{
+    try{
+      const d=JSON.parse(rd.result);
+      towersIdx={meta:d.meta,towers:d.towers};
+      if(d.chunks) Object.assign(towerChunks,d.chunks);
+      drawTowers();
+      if(towersIdx.towers.length){
+        const t=towersIdx.towers[0];
+        map.setView([50.75,-2.35],10);
+      }
+    }catch(e){alert('Could not read that file — is it the dorset_towers.json?');}
+  };
+  rd.readAsText(file);
+}
+function towerFilters(){
+  const cars=[...document.querySelectorAll('.carF:checked')].map(c=>c.value);
+  const techs=[...document.querySelectorAll('.techF:checked')].map(c=>c.value);
+  return t=>cars.includes(t.car)&&techs.includes(t.tech);
+}
+function drawTowers(){
+  if(towerLayer) map.removeLayer(towerLayer);
+  towerLayer=L.layerGroup();
+  const f=towerFilters(); let n=0;
+  const rend=L.canvas({padding:.3});
+  for(const t of towersIdx.towers){
+    if(!f(t)) continue; n++;
+    L.circleMarker([t.lat,t.lon],{renderer:rend,radius:t.tech==='5G'?7:5,color:'#0b1220',weight:1.5,
+      fillColor:CARCOL[t.car]||'#999',fillOpacity:.95})
+      .bindTooltip(`🗼 ${t.car.toUpperCase()} ${t.tech} · site ${t.gid}<br>${t.n.toLocaleString()} samples · best ${t.best} dBm`)
+      .on('click',()=>showFootprint(t))
+      .addTo(towerLayer);
+  }
+  towerLayer.addTo(map);
+  document.getElementById('towerCount').textContent=`${n.toLocaleString()} sites shown`;
+}
+document.querySelectorAll('.carF,.techF').forEach(c=>c.addEventListener('change',()=>{if(towersIdx)drawTowers();}));
+async function showFootprint(t){
+  if(footLayer){map.removeLayer(footLayer);footLayer=null;}
+  if(!towerChunks[t.ck]){
+    try{ towerChunks[t.ck]=await (await fetch(`data/towers/c_${t.ck}.json`)).json(); }catch(e){return;}
+  }
+  const pts=towerChunks[t.ck][t.id]||[];
+  footLayer=L.layerGroup();
+  const rend=L.canvas({padding:.3});
+  for(const p of pts){
+    const col=p[2]>=-85?'#22c55e':p[2]>=-95?'#a3e635':p[2]>=-105?'#facc15':p[2]>=-112?'#f97316':'#ef4444';
+    L.circleMarker([p[0],p[1]],{renderer:rend,radius:4,stroke:false,fillColor:col,fillOpacity:.8})
+      .bindTooltip(`${p[2]} dBm`).addTo(footLayer);
+  }
+  L.circleMarker([t.lat,t.lon],{radius:11,color:'#fff',weight:3,fillColor:CARCOL[t.car],fillOpacity:1}).addTo(footLayer);
+  footLayer.addTo(map);
+  document.getElementById('towerInfo').innerHTML=
+    `<b style="color:${CARCOL[t.car]}">⬤</b> <b>${t.car.toUpperCase()} ${t.tech}</b> — site ${t.gid}<br>
+     Estimated position: ${t.lat.toFixed(5)}, ${t.lon.toFixed(5)}<br>
+     ${t.n.toLocaleString()} measurements · best RSRP <b>${t.best} dBm</b><br>
+     Observed serving radius (≥−110 dBm, 90th pct): <b>${t.rad?t.rad.toLocaleString()+' m':'—'}</b><br>
+     ${pts.length} footprint points shown — click another tower to switch, or re-click to refresh.`;
+  const las=pts.map(p=>p[0]).concat([t.lat]), los=pts.map(p=>p[1]).concat([t.lon]);
+  map.fitBounds([[Math.min(...las),Math.min(...los)],[Math.max(...las),Math.max(...los)]],{padding:[30,30]});
+}
+map.on('click',e=>{if(mode==='assess')dropPin(e.latlng.lat,e.latlng.lng);});
 document.getElementById('band').addEventListener('change',()=>{if(current)dropPin(current.lat,current.lon);});
 ['rad','up','cs','mh','eirp'].forEach(id=>{
   document.getElementById(id).addEventListener('change',async ()=>{
