@@ -535,11 +535,12 @@ function towerFilters(){
   const techs=[...document.querySelectorAll('.techF:checked')].map(c=>c.value);
   return t=>cars.includes(t.car)&&techs.includes(t.tech);
 }
+const sharedCanvas=L.canvas({padding:.3}); // one canvas for towers + footprints so clicks always reach towers
 function drawTowers(){
   if(towerLayer) map.removeLayer(towerLayer);
   towerLayer=L.layerGroup();
   const f=towerFilters(); let n=0;
-  const rend=L.canvas({padding:.3});
+  const rend=sharedCanvas;
   for(const t of towersIdx.towers){
     if(!f(t)) continue; n++;
     L.circleMarker([t.lat,t.lon],{renderer:rend,radius:t.tech==='5G'?7:5,color:'#0b1220',weight:1.5,
@@ -560,15 +561,15 @@ function clearFootprint(){
   document.getElementById('towerInfo').innerHTML=TOWERINFO_DEFAULT;
 }
 async function showFootprint(t){
-  if(selectedTower===t.id){clearFootprint();return;}   // re-click = deselect
+  if(selectedTower===t.id && footLayer){clearFootprint();return;}   // re-click = deselect
   if(footLayer){map.removeLayer(footLayer);footLayer=null;}
   selectedTower=t.id;
   if(!towerChunks[t.ck]){
-    try{ towerChunks[t.ck]=await (await fetch(`data/towers/c_${t.ck}.json`)).json(); }catch(e){return;}
+    try{ towerChunks[t.ck]=await (await fetch(`data/towers/c_${t.ck}.json`)).json(); }catch(e){selectedTower=null;return;}
   }
   const pts=towerChunks[t.ck][t.id]||[];
   footLayer=L.layerGroup();
-  const rend=L.canvas({padding:.3});
+  const rend=sharedCanvas;
   for(const p of pts){
     const col=p[2]>=-85?'#22c55e':p[2]>=-95?'#a3e635':p[2]>=-105?'#facc15':p[2]>=-112?'#f97316':'#ef4444';
     L.polyline([[t.lat,t.lon],[p[0],p[1]]],{renderer:rend,color:col,weight:1,opacity:.22,interactive:false}).addTo(footLayer);
