@@ -1,0 +1,288 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Small Cell Value Mapper — England &amp; Wales</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root{
+    --bg:#0f172a; --panel:#1e293b; --panel2:#27364a; --text:#e2e8f0; --muted:#94a3b8;
+    --accent:#38bdf8; --good:#34d399; --warn:#fbbf24;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;background:var(--bg);color:var(--text);height:100vh;display:flex;overflow:hidden}
+  #sidebar{width:380px;min-width:380px;height:100vh;overflow-y:auto;background:var(--panel);padding:16px;box-shadow:2px 0 12px rgba(0,0,0,.4);z-index:1000}
+  #map{flex:1;height:100vh}
+  h1{font-size:17px;margin:0 0 2px}
+  .sub{color:var(--muted);font-size:11.5px;margin-bottom:12px}
+  .searchrow{display:flex;gap:6px;margin-bottom:12px}
+  .searchrow input{flex:1;background:var(--panel2);border:1px solid #334155;color:var(--text);border-radius:8px;padding:8px 10px;font-size:13px}
+  .searchrow button{background:var(--accent);border:none;color:#06283d;font-weight:700;border-radius:8px;padding:8px 12px;cursor:pointer}
+  .card{background:var(--panel2);border-radius:10px;padding:12px;margin-bottom:10px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 8px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+  .stat{background:var(--panel);border-radius:8px;padding:8px}
+  .stat .v{font-size:18px;font-weight:700}
+  .stat .l{font-size:10.5px;color:var(--muted);margin-top:2px}
+  .big{grid-column:1/-1}
+  .big .v{font-size:24px;color:var(--good)}
+  .slider-row{margin:10px 0 2px}
+  .slider-row label{font-size:12px;color:var(--muted);display:flex;justify-content:space-between}
+  .slider-row label b{color:var(--text)}
+  input[type=range]{width:100%;accent-color:var(--accent)}
+  .hint{font-size:10.5px;color:var(--muted);line-height:1.5;margin-top:8px}
+  .placeholder{color:var(--muted);font-size:13px;line-height:1.6;padding:8px 2px}
+  table{width:100%;border-collapse:collapse;font-size:11.5px}
+  th,td{text-align:left;padding:4px 6px;border-bottom:1px solid #334155}
+  th{color:var(--muted);font-weight:600}
+  td.num,th.num{text-align:right}
+  .pinrow{cursor:pointer}
+  .pinrow:hover{background:#33415555}
+  .btnrow{display:flex;gap:6px;margin-top:8px}
+  .btnrow button{flex:1;background:var(--panel);border:1px solid #334155;color:var(--text);border-radius:8px;padding:7px;font-size:12px;cursor:pointer}
+  .btnrow button:hover{border-color:var(--accent)}
+  .imdtag{display:inline-block;padding:1px 7px;border-radius:99px;font-size:11px;font-weight:700}
+  .spin{color:var(--accent);font-size:13px;padding:8px 2px}
+  a{color:var(--accent)}
+  details summary{cursor:pointer;font-size:12px;color:var(--muted)}
+  details p{font-size:11.5px;color:var(--muted);line-height:1.55}
+  .leaflet-container{background:#0b1220}
+</style>
+</head>
+<body>
+<div id="sidebar">
+  <h1>📡 Small Cell Value Mapper</h1>
+  <div class="sub">England &amp; Wales · click anywhere on the map to drop a candidate site</div>
+
+  <div class="searchrow">
+    <input id="q" placeholder="Search postcode or place… e.g. LS1 1UR" onkeydown="if(event.key==='Enter')doSearch()">
+    <button onclick="doSearch()">Go</button>
+  </div>
+
+  <div class="card">
+    <h2>Coverage assumptions</h2>
+    <div class="slider-row">
+      <label>Cell radius <b><span id="radV">200</span> m</b></label>
+      <input type="range" id="rad" min="50" max="1000" step="25" value="200">
+    </div>
+    <div class="slider-row">
+      <label>Productivity uplift from new coverage <b><span id="upV">0.7</span>% of area GVA</b></label>
+      <input type="range" id="up" min="0" max="3" step="0.1" value="0.7">
+    </div>
+    <div class="slider-row">
+      <label>Consumer value per covered resident <b>£<span id="csV">200</span>/yr</b></label>
+      <input type="range" id="cs" min="0" max="600" step="25" value="200">
+    </div>
+  </div>
+
+  <div id="results" class="card">
+    <h2>Site assessment</h2>
+    <div class="placeholder">No site selected yet.<br><br>Drop a pin on the map (or search a postcode) and I'll measure the population, premises, businesses, economic activity and deprivation inside the coverage circle — then estimate the annual value a new outdoor small cell could unlock there, assuming no existing coverage.</div>
+  </div>
+
+  <div class="card">
+    <h2>Saved sites (<span id="pinCount">0</span>)</h2>
+    <div id="pinsEmpty" class="placeholder" style="padding:2px">Press “Save site” on an assessment to compare locations here.</div>
+    <table id="pinTable" style="display:none">
+      <thead><tr><th>Site</th><th class="num">Pop</th><th class="num">GVA £m</th><th class="num">Value £k/yr</th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="btnrow"><button onclick="exportCSV()">⬇ Export CSV</button><button onclick="clearPins()">Clear all</button></div>
+  </div>
+
+  <div class="card">
+    <details>
+      <summary>Method, data sources &amp; caveats</summary>
+      <p><b>Data (all open, OGL-licensed):</b> ONS Census 2021 (population TS001, households TS041 per Output Area); ONS Output Area population-weighted centroids &amp; lookups (Open Geography Portal); ONS UK small area GVA estimates 1998–2023 (LSOA, current prices); MHCLG English Indices of Deprivation 2019; Welsh Government WIMD 2019; ONS UK Business Counts via Nomis (local units per MSOA).</p>
+      <p><b>How the circle is measured:</b> each Output Area (~125 households) is approximated as a disc around its population-weighted centroid, sized from the distance to its neighbours. The share of that disc inside your coverage circle weights how much of the OA's population, premises, businesses and GVA count as covered. LSOA GVA is allocated to OAs by population and business weight, and business counts are allocated from MSOA by household share — so treat block-level figures as estimates, not facts.</p>
+      <p><b>Value model:</b> annual value = (uplift% × covered GVA) + (consumer value × covered residents). The 0.7% default uplift reflects the broad literature on mobile coverage/productivity effects; the honest range is wide (≈0.3–1.5%), hence the slider. 10-year value is discounted at the HM Treasury Green Book rate (3.5%). Assumes genuinely no usable coverage today — where coverage exists, these are upper bounds.</p>
+      <p><b>Not included (no free open source exists):</b> real footfall and card-spend data are commercial; business counts and workday GVA are used as proxies.</p>
+    </details>
+  </div>
+</div>
+<div id="map"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const TILE_DEG = 1;
+const tileCache = {};
+let index = null;
+let marker = null, circle = null, oaLayer = null;
+let current = null;
+let pins = JSON.parse(localStorage.getItem('sc_pins')||'[]');
+
+const map = L.map('map',{zoomControl:true}).setView([52.6,-1.8],7);
+L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{
+  attribution:'&copy; OpenStreetMap contributors &copy; CARTO',maxZoom:19}).addTo(map);
+
+fetch('data/index.json').then(r=>r.json()).then(d=>{index=d;});
+
+function tileId(lon,lat){return Math.floor(lon/TILE_DEG)+'_'+Math.floor(lat/TILE_DEG);}
+async function getTile(id){
+  if(tileCache[id]!==undefined) return tileCache[id];
+  if(index && !(id in index.tiles)){tileCache[id]=null;return null;}
+  try{
+    const r=await fetch('data/tiles/'+id+'.json');
+    tileCache[id]= r.ok ? await r.json() : null;
+  }catch(e){tileCache[id]=null;}
+  return tileCache[id];
+}
+function dist(lat1,lon1,lat2,lon2){ // metres, equirectangular (fine at <2km)
+  const R=6371000, x=(lon2-lon1)*Math.PI/180*Math.cos((lat1+lat2)/2*Math.PI/180), y=(lat2-lat1)*Math.PI/180;
+  return Math.sqrt(x*x+y*y)*R;
+}
+// area of intersection of two circles, divided by area of circle r2 (the OA disc)
+function overlapFrac(d,r1,r2){
+  if(d>=r1+r2) return 0;
+  if(d<=Math.abs(r1-r2)) return r1>=r2 ? 1 : (r1*r1)/(r2*r2);
+  const a1=r1*r1*Math.acos((d*d+r1*r1-r2*r2)/(2*d*r1));
+  const a2=r2*r2*Math.acos((d*d+r2*r2-r1*r1)/(2*d*r2));
+  const a3=0.5*Math.sqrt((-d+r1+r2)*(d+r1-r2)*(d-r1+r2)*(d+r1+r2));
+  return (a1+a2-a3)/(Math.PI*r2*r2);
+}
+async function assess(lat,lon){
+  const R=+document.getElementById('rad').value;
+  const pad=(R+2500)/111320; // deg padding for neighbour search
+  const ids=new Set();
+  for(const dx of [-pad,0,pad]) for(const dy of [-pad,0,pad])
+    ids.add(tileId(lon+dx/Math.cos(lat*Math.PI/180),lat+dy));
+  const tiles=(await Promise.all([...ids].map(getTile))).filter(t=>t);
+  // gather candidate OAs
+  const cands=[];
+  for(const t of tiles) for(const o of t.oas){
+    const d=dist(lat,lon,o[2],o[1]);
+    if(d<R+2500) cands.push({o,d,lad:t.lads[o[7]]});
+  }
+  if(!cands.length) return null;
+  // effective OA radius = 0.62 * nearest-neighbour distance (disc packing), clamped
+  for(const c of cands){
+    let nn=1e9;
+    for(const c2 of cands){ if(c2!==c){ const dd=dist(c.o[2],c.o[1],c2.o[2],c2.o[1]); if(dd<nn) nn=dd; } }
+    c.r = Math.min(2000, Math.max(60, 0.62*(nn===1e9?300:nn)));
+  }
+  let pop=0,hh=0,gva=0,biz=0,imdW=0,imdN=0; const lads={}, covered=[];
+  for(const c of cands){
+    const f=overlapFrac(Math.max(c.d,0.01),R,c.r);
+    if(f<=0) continue;
+    pop+=f*c.o[3]; hh+=f*c.o[4]; gva+=f*c.o[5]; biz+=f*c.o[8];
+    if(c.o[6]>0){imdW+=f*c.o[3]*c.o[6]; imdN+=f*c.o[3];}
+    lads[c.lad]=(lads[c.lad]||0)+f*c.o[3];
+    covered.push(c);
+  }
+  const lad=Object.entries(lads).sort((a,b)=>b[1]-a[1]).map(e=>e[0]).slice(0,2).join(' / ')||'—';
+  return {lat,lon,R,pop,hh,gva,biz,imd:imdN>0?imdW/imdN:0,lad,covered};
+}
+function money(x){ // x in £
+  if(x>=1e9) return '£'+(x/1e9).toFixed(2)+'bn';
+  if(x>=1e6) return '£'+(x/1e6).toFixed(2)+'m';
+  if(x>=1e3) return '£'+(x/1e3).toFixed(0)+'k';
+  return '£'+x.toFixed(0);
+}
+function imdColor(d){return ['#999','#d73027','#f46d43','#fdae61','#fee08b','#ffffbf','#d9ef8b','#a6d96a','#66bd63','#1a9850','#006837'][Math.round(d)]||'#999';}
+function render(res){
+  current=res;
+  const el=document.getElementById('results');
+  if(!res){el.innerHTML='<h2>Site assessment</h2><div class="placeholder">No data here — that point looks like open water or is outside England &amp; Wales.</div>';return;}
+  const up=+document.getElementById('up').value/100;
+  const cs=+document.getElementById('cs').value;
+  const gvaY=res.gva*1000;                  // £/yr (tiles store £k)
+  const prod=up*gvaY, cons=cs*res.pop, ann=prod+cons;
+  let npv=0; for(let t=1;t<=10;t++) npv+=ann/Math.pow(1.035,t);
+  const dec=res.imd?res.imd.toFixed(1):'—';
+  el.innerHTML=`<h2>Site assessment — ${res.lad}</h2>
+  <div class="grid">
+    <div class="stat"><div class="v">${Math.round(res.pop).toLocaleString()}</div><div class="l">residents covered</div></div>
+    <div class="stat"><div class="v">${Math.round(res.hh).toLocaleString()}</div><div class="l">household premises</div></div>
+    <div class="stat"><div class="v">${Math.round(res.biz).toLocaleString()}</div><div class="l">business units</div></div>
+    <div class="stat"><div class="v"><span class="imdtag" style="background:${imdColor(res.imd)};color:#111">${dec}</span></div><div class="l">deprivation decile (1 = most deprived)</div></div>
+    <div class="stat big"><div class="v">${money(gvaY)}</div><div class="l">est. annual GVA inside ${res.R}m circle (2023, current prices)</div></div>
+    <div class="stat big"><div class="v">${money(ann)} / yr</div><div class="l">est. value of new small cell coverage<br>(${money(prod)} productivity + ${money(cons)} consumer value)</div></div>
+    <div class="stat big"><div class="v" style="color:var(--warn)">${money(npv)}</div><div class="l">10-year value (Green Book 3.5% discount)</div></div>
+  </div>
+  <div class="btnrow">
+    <button onclick="savePin()">📌 Save site</button>
+    <button onclick="toggleOAs()" id="oaBtn">◉ Show data blocks</button>
+  </div>
+  <div class="hint">GVA per head here: <b>${res.pop>1?money(gvaY/res.pop):'—'}</b> · ${res.covered.length} output areas intersect the circle. Assumes no usable coverage exists today.</div>`;
+}
+async function dropPin(lat,lon){
+  const R=+document.getElementById('rad').value;
+  if(marker) map.removeLayer(marker);
+  if(circle) map.removeLayer(circle);
+  if(oaLayer){map.removeLayer(oaLayer);oaLayer=null;}
+  marker=L.marker([lat,lon]).addTo(map);
+  circle=L.circle([lat,lon],{radius:R,color:'#38bdf8',weight:2,fillOpacity:.12}).addTo(map);
+  document.getElementById('results').innerHTML='<h2>Site assessment</h2><div class="spin">Measuring coverage area…</div>';
+  const res=await assess(lat,lon);
+  render(res);
+}
+map.on('click',e=>dropPin(e.latlng.lat,e.latlng.lng));
+['rad','up','cs'].forEach(id=>{
+  document.getElementById(id).addEventListener('input',async ()=>{
+    document.getElementById('radV').textContent=document.getElementById('rad').value;
+    document.getElementById('upV').textContent=document.getElementById('up').value;
+    document.getElementById('csV').textContent=document.getElementById('cs').value;
+    if(current){
+      if(id==='rad'){ dropPin(current.lat,current.lon); }
+      else render(current);
+    }
+  });
+});
+function toggleOAs(){
+  if(oaLayer){map.removeLayer(oaLayer);oaLayer=null;document.getElementById('oaBtn').textContent='◉ Show data blocks';return;}
+  if(!current) return;
+  oaLayer=L.layerGroup();
+  for(const c of current.covered){
+    const f=overlapFrac(c.d,current.R,c.r);
+    L.circleMarker([c.o[2],c.o[1]],{radius:5,color:'#111',weight:1,fillColor:imdColor(c.o[6]),fillOpacity:.95})
+      .bindTooltip(`<b>${c.o[0]}</b><br>Pop ${c.o[3]} · HH ${c.o[4]} · Biz ${c.o[8]}<br>GVA £${(c.o[5]/1000).toFixed(1)}m · IMD ${c.o[6]||'—'}<br>Counted at ${(f*100).toFixed(0)}%`)
+      .addTo(oaLayer);
+  }
+  oaLayer.addTo(map);
+  document.getElementById('oaBtn').textContent='◎ Hide data blocks';
+}
+function savePin(){
+  if(!current) return;
+  const up=+document.getElementById('up').value/100, cs=+document.getElementById('cs').value;
+  const ann=up*current.gva*1000+cs*current.pop;
+  pins.push({name:current.lad+' #'+(pins.length+1),lat:current.lat,lon:current.lon,R:current.R,
+    pop:Math.round(current.pop),hh:Math.round(current.hh),biz:Math.round(current.biz),
+    gva_m:+(current.gva/1000).toFixed(2),imd:+current.imd.toFixed(1),value_k:Math.round(ann/1000)});
+  localStorage.setItem('sc_pins',JSON.stringify(pins));
+  drawPins();
+}
+function drawPins(){
+  document.getElementById('pinCount').textContent=pins.length;
+  const tb=document.querySelector('#pinTable tbody'); tb.innerHTML='';
+  document.getElementById('pinTable').style.display=pins.length?'table':'none';
+  document.getElementById('pinsEmpty').style.display=pins.length?'none':'block';
+  pins.forEach((p,i)=>{
+    const tr=document.createElement('tr'); tr.className='pinrow';
+    tr.innerHTML=`<td>${p.name}</td><td class="num">${p.pop.toLocaleString()}</td><td class="num">${p.gva_m}</td><td class="num">${p.value_k.toLocaleString()}</td><td style="cursor:pointer" onclick="event.stopPropagation();pins.splice(${i},1);localStorage.setItem('sc_pins',JSON.stringify(pins));drawPins()">✕</td>`;
+    tr.onclick=()=>{map.setView([p.lat,p.lon],15);dropPin(p.lat,p.lon);};
+    tb.appendChild(tr);
+  });
+}
+function clearPins(){pins=[];localStorage.setItem('sc_pins','[]');drawPins();}
+function exportCSV(){
+  const head='name,lat,lon,radius_m,residents,households,businesses,gva_2023_gbp_m,imd_decile,est_value_gbp_k_per_yr';
+  const rows=pins.map(p=>[p.name.replaceAll(',',';'),p.lat.toFixed(6),p.lon.toFixed(6),p.R,p.pop,p.hh,p.biz,p.gva_m,p.imd,p.value_k].join(','));
+  const blob=new Blob([head+'\n'+rows.join('\n')],{type:'text/csv'});
+  const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='small_cell_sites.csv'; a.click();
+}
+async function doSearch(){
+  const q=document.getElementById('q').value.trim(); if(!q) return;
+  try{
+    let r=await fetch('https://api.postcodes.io/postcodes?q='+encodeURIComponent(q)+'&limit=1');
+    let d=await r.json();
+    if(d.result&&d.result.length){const p=d.result[0];map.setView([p.latitude,p.longitude],15);dropPin(p.latitude,p.longitude);return;}
+    r=await fetch('https://nominatim.openstreetmap.org/search?format=json&countrycodes=gb&limit=1&q='+encodeURIComponent(q));
+    d=await r.json();
+    if(d.length){map.setView([+d[0].lat,+d[0].lon],15);dropPin(+d[0].lat,+d[0].lon);}
+  }catch(e){}
+}
+drawPins();
+</script>
+</body>
+</html>
