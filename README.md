@@ -38,6 +38,29 @@ With LiDAR mode on, the app fetches a 1m elevation grid around your pin, places 
 - Productivity uplift default 0.7%/yr of covered GVA (literature range ~0.3–1.5%) and consumer value default £200/resident/yr — both adjustable via sliders.
 - Footfall and card-spend data have no free open equivalents; business density and GVA act as proxies.
 
+## Code structure
+
+The UI is Vue 3 (CDN, no build step); the GIS/RF engine is plain ES modules:
+
+```
+index.html        markup only (Vue templates)
+css/style.css     styling
+js/
+  app.js          application layer — Vue state, UI bindings, orchestration
+  config.js       constants, palettes, data-source URLs, defaults
+  format.js       money/number/date formatting
+  geo.js          geometry & geodesy (distances, circle overlap, hulls, OSGB)
+  datatiles.js    census/economic data tiles: loading, caching, lookup
+  terrain.js      elevation: EA 1m LiDAR WCS + open terrain-tile fallback
+  radio.js        ray-cast viewshed + 3GPP TR 38.901 UMi RSRP model
+  assess.js       economic assessment + Green Book value model
+  scan.js         best-site grid search over the visible map
+  search.js       postcode/place geocoding
+  map.js          Leaflet map + all drawing (pin, footprint, sites, masts)
+  towers.js       tower locator (local drive-test file, never uploaded)
+```
+
 ## Run it
 
-Hosted on GitHub Pages (free), or locally with: `python3 -m http.server` in this folder, then open http://localhost:8000
+Hosted on GitHub Pages, or locally with: `python3 -m http.server` in this folder, then open http://localhost:8000
+(a local server is required — ES modules don't load from `file://`).
