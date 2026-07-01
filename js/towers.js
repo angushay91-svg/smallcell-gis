@@ -39,7 +39,8 @@ export function draw (filters, onSelect) {
     L.circleMarker([t.lat, t.lon], {
       renderer: canvas(), radius: t.tech === '5G' ? 7 : 5,
       color: '#0b1220', weight: 1.5, fillColor: CARRIER_COLOURS[t.car] || '#999', fillOpacity: .95,
-    }).bindTooltip(`🗼 ${t.car.toUpperCase()} ${t.tech} · site ${t.gid}<br>${t.n.toLocaleString()} samples · best ${t.best} dBm`)
+    }).bindTooltip(`🗼 ${t.car.toUpperCase()} ${t.tech} · site ${t.gid}<br>${t.n.toLocaleString()} samples · best ${t.best} dBm`
+        + (t.unc != null ? `<br>±${t.unc} m (conf ${t.conf || '?'})` : ''))
       .on('click', () => onSelect(t))
       .addTo(towerLayer);
   }
