@@ -41,7 +41,12 @@ export function draw (filters, onSelect) {
       color: '#0b1220', weight: 1.5, fillColor: CARRIER_COLOURS[t.car] || '#999', fillOpacity: .95,
     }).bindTooltip(`🗼 ${t.car.toUpperCase()} ${t.tech} · site ${t.gid}<br>${t.n.toLocaleString()} samples · best ${t.best} dBm`
         + (t.unc != null ? `<br>±${t.unc} m (conf ${t.conf || '?'})` : ''))
-      .on('click', () => onSelect(t))
+      .on('click', (e) => {
+        // stop the click reaching the map's background handler (which clears
+        // the footprint) — with embedded chunks showFootprint is synchronous
+        if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        onSelect(t);
+      })
       .addTo(towerLayer);
   }
   towerLayer.addTo(map);
