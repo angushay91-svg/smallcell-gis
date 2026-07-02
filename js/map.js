@@ -8,6 +8,12 @@ export let map = null;
 let marker = null, circle = null, oaLayer = null, losLayer = null;
 let siteLayer = null, bestLayer = null, mastLayer = null;
 
+// active base map, so overlays can adjust their contrast per background
+let baseName = 'dark';
+let baseCb = null;
+export function baseTheme () { return baseName; }         // 'dark' | 'streets' | 'satellite'
+export function onBaseChange (fn) { baseCb = fn; }        // called with the new theme
+
 export function initMap (containerId, onClick) {
   map = L.map(containerId, { zoomControl: true }).setView([52.6, -1.8], 7);
   const baseDark = L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
@@ -22,6 +28,11 @@ export function initMap (containerId, onClick) {
   baseDark.addTo(map);
   L.control.layers({ '🌑 Dark': baseDark, '🛰 Satellite': baseSat, '🗺 Streets': baseStreets },
     null, { position: 'topright' }).addTo(map);
+  map.on('baselayerchange', e => {
+    const n = e.name || '';
+    baseName = n.indexOf('Satellite') > -1 ? 'satellite' : n.indexOf('Streets') > -1 ? 'streets' : 'dark';
+    if (baseCb) baseCb(baseName);
+  });
   map.on('click', e => onClick(e.latlng.lat, e.latlng.lng));
   return map;
 }
