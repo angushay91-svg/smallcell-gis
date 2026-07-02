@@ -113,7 +113,7 @@ export async function showFootprint (t, refit = true) {
       { renderer: rend, radius: 4, stroke: st.ptStroke, color: st.ptColor, weight: st.ptWeight,
         fillColor: rsrpHex(p[2]), fillOpacity: st.ptFill, interactive: false }).addTo(footLayer);
   }
-  const hull = convexHull(pts.concat([[t.lat, t.lon, 0]])));
+  const hull = convexHull(pts.concat([[t.lat, t.lon, 0]]));
   if (hull) {
     if (st.casing) {  // contrast casing under the coloured outline (light/photo bases)
       L.polygon(hull, { renderer: rend, color: st.casing, weight: st.casingWeight,
