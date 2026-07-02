@@ -43,8 +43,11 @@ export function draw (filters, onSelect) {
         + (t.unc != null ? `<br>±${t.unc} m (conf ${t.conf || '?'})` : ''))
       .on('click', (e) => {
         // stop the click reaching the map's background handler (which clears
-        // the footprint) — with embedded chunks showFootprint is synchronous
-        if (e.originalEvent) L.DomEvent.stopPropagation(e.originalEvent);
+        // the footprint). NB: pass the LEAFLET event — L.DomEvent sets
+        // originalEvent._stopped, which Map._fireDOMEvent checks; passing the
+        // raw DOM event only calls native stopPropagation, which Leaflet's
+        // canvas dispatch loop ignores.
+        L.DomEvent.stopPropagation(e);
         onSelect(t);
       })
       .addTo(towerLayer);
